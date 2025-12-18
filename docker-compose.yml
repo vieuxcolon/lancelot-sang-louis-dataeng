@@ -43,12 +43,8 @@
 #                                Default: ''
 #
 # Feel free to modify this file to suit your needs.
----
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.
-
----
-version: '3.8'
 
 ##############################
 # AIRFLOW COMMON CONFIG
