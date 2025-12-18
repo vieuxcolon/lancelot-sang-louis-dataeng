@@ -35,6 +35,9 @@ x-airflow-common: &airflow-common
 # SERVICES
 ##############################
 services:
+  ##############################
+  # PostgreSQL
+  ##############################
   postgres:
     image: postgres:16
     environment:
@@ -54,6 +57,9 @@ services:
     networks:
       - airflow-network
 
+  ##############################
+  # Redis
+  ##############################
   redis:
     image: redis:7.2-bookworm
     expose:
@@ -68,6 +74,9 @@ services:
     networks:
       - airflow-network
 
+  ##############################
+  # MongoDB
+  ##############################
   mongo:
     image: mongo:7
     container_name: mongo
@@ -84,6 +93,9 @@ services:
     networks:
       - airflow-network
 
+  ##############################
+  # Mongo Express
+  ##############################
   mongo-express:
     image: mongo-express:latest
     container_name: mongo-express
@@ -103,7 +115,7 @@ services:
       - airflow-network
 
   ##############################
-  # Druid Multi-Service
+  # Druid Multi-Service (v0.25.0)
   ##############################
   zookeeper:
     image: zookeeper:3.5.10
@@ -117,7 +129,7 @@ services:
       - airflow-network
 
   druid-coordinator:
-    image: apache/druid:28.0.0
+    image: apache/druid:0.25.0
     container_name: druid-coordinator
     environment:
       - DRUID_XMS=${DRUID_XMS}
@@ -139,7 +151,7 @@ services:
       - airflow-network
 
   druid-broker:
-    image: apache/druid:28.0.0
+    image: apache/druid:0.25.0
     container_name: druid-broker
     environment:
       - DRUID_XMS=${DRUID_XMS}
@@ -154,7 +166,7 @@ services:
       - airflow-network
 
   druid-historical:
-    image: apache/druid:28.0.0
+    image: apache/druid:0.25.0
     container_name: druid-historical
     environment:
       - DRUID_XMS=${DRUID_XMS}
@@ -169,7 +181,7 @@ services:
       - airflow-network
 
   druid-middlemanager:
-    image: apache/druid:28.0.0
+    image: apache/druid:0.25.0
     container_name: druid-middlemanager
     environment:
       - DRUID_XMS=${DRUID_XMS}
@@ -184,7 +196,7 @@ services:
       - airflow-network
 
   druid-router:
-    image: apache/druid:28.0.0
+    image: apache/druid:0.25.0
     container_name: druid-router
     environment:
       - DRUID_XMS=${DRUID_XMS}
@@ -280,6 +292,9 @@ services:
     networks:
       - airflow-network
 
+  ##############################
+  # PgAdmin
+  ##############################
   pgadmin:
     image: elestio/pgadmin
     container_name: pgadmin_airflow
