@@ -157,13 +157,13 @@ services:
   druid:
     image: apache/druid:28.0.0
     container_name: druid
-    command: ["bin/start-single-server"]
     environment:
       DRUID_XMS: 512M
       DRUID_XMX: 1G
+      DRUID_SERVICE: "single-server"
     ports:
-      - "8888:8888"   # Druid Console (Router)
-      - "8082:8082"   # Broker (SQL)
+      - "8888:8888"   # Druid Router / Console
+      - "8082:8082"   # Druid Broker (SQL queries)
     volumes:
       - druid-data:/opt/druid/var
     restart: unless-stopped
