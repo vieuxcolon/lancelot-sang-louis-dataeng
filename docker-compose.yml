@@ -156,22 +156,20 @@ services:
   # Druid
   ##############################
   druid:
-    image: apache/druid:28.0.0
-    container_name: druid
-    environment:
-      DRUID_XMS: 512M
-      DRUID_XMX: 1G
-    ports:
-      - "${DRUID_ROUTER_PORT}:8888"   # Router / Console
-      - "${DRUID_BROKER_PORT}:8082"   # Broker queries
-      - "${DRUID_OVERLORD_PORT}:8090" # Overlord
-      - "${DRUID_COORDINATOR_PORT}:8081" # Coordinator
-      - "${DRUID_HISTORICAL_PORT}:8083"  # Historical
-    volumes:
-      - druid-data:/opt/druid/data
-    restart: always
-    networks:
-      - airflow-network
+  image: apache/druid:28.0.0
+  container_name: druid
+  command: ["bin/start-single-server"]
+  environment:
+    DRUID_XMS: 512M
+    DRUID_XMX: 1G
+  ports:
+    - "8888:8888"   # Druid Console (Router)
+    - "8082:8082"   # Broker (SQL)
+  volumes:
+    - druid-data:/opt/druid/var
+  restart: unless-stopped
+  networks:
+    - airflow-network
 
   ##############################
   # Airflow Core
