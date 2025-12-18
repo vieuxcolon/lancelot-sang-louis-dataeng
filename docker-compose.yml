@@ -45,27 +45,26 @@
 # Feel free to modify this file to suit your needs.
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.
+version: "3.9"
 
 ##############################
 # AIRFLOW COMMON CONFIG
 ##############################
-x-airflow-common:
-  &airflow-common
+x-airflow-common: &airflow-common
   build: .
-  environment:
-    &airflow-common-env
+  environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: airflow.providers.celery.executors.celery_executor.CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: ''
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET}
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
-    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW_CONFIG: "/opt/airflow/config/airflow.cfg"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
@@ -107,7 +106,7 @@ services:
   redis:
     image: redis:7.2-bookworm
     expose:
-      - 6379
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -153,23 +152,23 @@ services:
       - airflow-network
 
   ##############################
-  # Druid
+  # Druid (Single Server)
   ##############################
   druid:
-  image: apache/druid:28.0.0
-  container_name: druid
-  command: ["bin/start-single-server"]
-  environment:
-    DRUID_XMS: 512M
-    DRUID_XMX: 1G
-  ports:
-    - "8888:8888"   # Druid Console (Router)
-    - "8082:8082"   # Broker (SQL)
-  volumes:
-    - druid-data:/opt/druid/var
-  restart: unless-stopped
-  networks:
-    - airflow-network
+    image: apache/druid:28.0.0
+    container_name: druid
+    command: ["bin/start-single-server"]
+    environment:
+      DRUID_XMS: 512M
+      DRUID_XMX: 1G
+    ports:
+      - "8888:8888"   # Druid Console (Router)
+      - "8082:8082"   # Broker (SQL)
+    volumes:
+      - druid-data:/opt/druid/var
+    restart: unless-stopped
+    networks:
+      - airflow-network
 
   ##############################
   # Airflow Core
@@ -245,8 +244,8 @@ services:
           --email admin@example.com
     environment:
       <<: *airflow-common-env
-      _AIRFLOW_DB_MIGRATE: 'true'
-      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
     user: "0:0"
