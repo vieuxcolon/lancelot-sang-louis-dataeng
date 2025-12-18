@@ -1,51 +1,3 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
-
-# Basic Airflow cluster configuration for CeleryExecutor with Redis and PostgreSQL.
-#
-# WARNING: This configuration is for local development. Do not use it in a production deployment.
-#
-# This configuration supports basic configuration using environment variables or an .env file
-# The following variables are supported:
-#
-# AIRFLOW_IMAGE_NAME           - Docker image name used to run Airflow.
-#                                Default: apache/airflow:|version|
-# AIRFLOW_UID                  - User ID in Airflow containers
-#                                Default: 50000
-# AIRFLOW_PROJ_DIR             - Base path to which all the files will be volumed.
-#                                Default: .
-# Those configurations are useful mostly in case of standalone testing/running Airflow in test/try-out mode
-#
-# _AIRFLOW_WWW_USER_USERNAME   - Username for the administrator account (if requested).
-#                                Default: airflow
-# _AIRFLOW_WWW_USER_PASSWORD   - Password for the administrator account (if requested).
-#                                Default: airflow
-# _PIP_ADDITIONAL_REQUIREMENTS - Additional PIP requirements to add when starting all containers.
-#                                Use this option ONLY for quick checks. Installing requirements at container
-#                                startup is done EVERY TIME the service is started.
-#                                A better way is to build a custom image or extend the official image
-#                                as described in https://airflow.apache.org/docs/docker-stack/build.html.
-#                                Default: ''
-#
-# Feel free to modify this file to suit your needs.
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.
-
 ##############################
 # AIRFLOW COMMON CONFIG
 ##############################
@@ -151,20 +103,97 @@ services:
       - airflow-network
 
   ##############################
-  # Druid (Single Server)
+  # Druid Multi-Service
   ##############################
-  druid:
-    image: apache/druid:28.0.0
-    container_name: druid
-    environment:
-      DRUID_XMS: 512M
-      DRUID_XMX: 1G
-      DRUID_SERVICE: "single-server"
+  zookeeper:
+    image: zookeeper:3.5.10
+    container_name: zookeeper
     ports:
-      - "8888:8888"   # Druid Router / Console
-      - "8082:8082"   # Druid Broker (SQL queries)
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+    restart: always
+    networks:
+      - airflow-network
+
+  druid-coordinator:
+    image: apache/druid:28.0.0
+    container_name: druid-coordinator
+    environment:
+      - DRUID_XMS=${DRUID_XMS}
+      - DRUID_XMX=${DRUID_XMX}
+      - DRUID_METADATA_STORAGE_TYPE=postgresql
+      - DRUID_METADATA_STORAGE_CONNECT_URI=jdbc:postgresql://postgres:5432/${DRUID_METADATA_DB}
+      - DRUID_METADATA_STORAGE_USER=${DRUID_METADATA_USER}
+      - DRUID_METADATA_STORAGE_PASSWORD=${DRUID_METADATA_PASSWORD}
+    ports:
+      - "${DRUID_COORDINATOR_PORT}:8081"
+    depends_on:
+      - zookeeper
+      - postgres
     volumes:
       - druid-data:/opt/druid/var
+    command: coordinator
+    restart: unless-stopped
+    networks:
+      - airflow-network
+
+  druid-broker:
+    image: apache/druid:28.0.0
+    container_name: druid-broker
+    environment:
+      - DRUID_XMS=${DRUID_XMS}
+      - DRUID_XMX=${DRUID_XMX}
+    ports:
+      - "${DRUID_BROKER_PORT}:8082"
+    depends_on:
+      - druid-coordinator
+    command: broker
+    restart: unless-stopped
+    networks:
+      - airflow-network
+
+  druid-historical:
+    image: apache/druid:28.0.0
+    container_name: druid-historical
+    environment:
+      - DRUID_XMS=${DRUID_XMS}
+      - DRUID_XMX=${DRUID_XMX}
+    ports:
+      - "${DRUID_HISTORICAL_PORT}:8083"
+    depends_on:
+      - druid-coordinator
+    command: historical
+    restart: unless-stopped
+    networks:
+      - airflow-network
+
+  druid-middlemanager:
+    image: apache/druid:28.0.0
+    container_name: druid-middlemanager
+    environment:
+      - DRUID_XMS=${DRUID_XMS}
+      - DRUID_XMX=${DRUID_XMX}
+    ports:
+      - "${DRUID_MIDDLEMANAGER_PORT}:8091"
+    depends_on:
+      - druid-coordinator
+    command: middleManager
+    restart: unless-stopped
+    networks:
+      - airflow-network
+
+  druid-router:
+    image: apache/druid:28.0.0
+    container_name: druid-router
+    environment:
+      - DRUID_XMS=${DRUID_XMS}
+      - DRUID_XMX=${DRUID_XMX}
+    ports:
+      - "${DRUID_ROUTER_PORT}:8888"
+    depends_on:
+      - druid-coordinator
+    command: router
     restart: unless-stopped
     networks:
       - airflow-network
