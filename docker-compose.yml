@@ -48,6 +48,8 @@
 # or more contributor license agreements.
 
 ---
+version: '3.8'
+
 ##############################
 # AIRFLOW COMMON CONFIG
 ##############################
@@ -94,9 +96,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      PGUSER: ${POSTGRES_USER}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -124,9 +123,6 @@ services:
     networks:
       - airflow-network
 
-  ##############################
-  # MongoDB
-  ##############################
   mongo:
     image: mongo:7
     container_name: mongo
@@ -160,19 +156,22 @@ services:
     restart: always
     networks:
       - airflow-network
-  
+
   ##############################
   # Druid
   ##############################
   druid:
     image: apache/druid:35.0.1
+    container_name: druid
+    environment:
+      DRUID_PORT: 8888
     ports:
-      - "${DRUID_ROUTER_PORT}:8888"    # Router/UI
-      - "${DRUID_BROKER_PORT}:8082"    # Broker/SQL
-      - "${DRUID_OVERLORD_PORT}:8090"  # Overlord
+      - "${DRUID_ROUTER_PORT}:8888"
+      - "${DRUID_BROKER_PORT}:8082"
+      - "${DRUID_OVERLORD_PORT}:8090"
+    restart: always
     networks:
       - airflow-network
-    restart: always
 
   ##############################
   # Airflow Core
@@ -256,9 +255,6 @@ services:
     networks:
       - airflow-network
 
-  ##############################
-  # PgAdmin
-  ##############################
   pgadmin:
     image: elestio/pgadmin
     container_name: pgadmin_airflow
@@ -281,4 +277,3 @@ volumes:
   postgres-db-volume:
   mongo-data:
   mongo-config:
-
