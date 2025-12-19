@@ -3,7 +3,8 @@
 # It uses utility functions defined in etl_utils.py to perform the various tasks of data cleaning and transformation
 # the resulting clean datasets include ariadb_clean, workaccidents_clean and fatalities_clean which are loaded into clean database tables
 # =====================================================================================================================================================
-# dag_data_fetch.py
+# dag_data_clean.py
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
