@@ -1,4 +1,8 @@
-
+# =================== dag_data_analyze.py =============================================================================================================
+# This dag is responsible for processing clean data moving it from the staging zone to the production zone.
+# It creates dimensions tables, the star schemas, perform a minimal and full test of the star schema using utilities defined in etl_utils.py
+# The created star schema in the production zone is ready for further analytical workloads  
+# =====================================================================================================================================================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
