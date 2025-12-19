@@ -132,12 +132,13 @@ services:
     image: apache/druid:28.0.0
     container_name: druid-coordinator
     environment:
-      - DRUID_XMS=${DRUID_XMS}
-      - DRUID_XMX=${DRUID_XMX}
-      - DRUID_METADATA_STORAGE_TYPE=postgresql
-      - DRUID_METADATA_STORAGE_CONNECT_URI=jdbc:postgresql://postgres:5432/${DRUID_METADATA_DB}
-      - DRUID_METADATA_STORAGE_USER=${DRUID_METADATA_USER}
-      - DRUID_METADATA_STORAGE_PASSWORD=${DRUID_METADATA_PASSWORD}
+      - druid_xms=${DRUID_XMS}
+      - druid_xmx=${DRUID_XMX}
+      - druid_metadata_storage_type=postgresql
+      - druid_metadata_storage_connector_connectURI=jdbc:postgresql://postgres:5432/${DRUID_METADATA_DB}
+      - druid_metadata_storage_connector_user=${DRUID_METADATA_USER}
+      - druid_metadata_storage_connector_password=${DRUID_METADATA_PASSWORD}
+      - druid_extensions_loadList=["postgresql-metadata-storage"]
     ports:
       - "${DRUID_COORDINATOR_PORT}:8081"
     depends_on:
@@ -154,8 +155,9 @@ services:
     image: apache/druid:28.0.0
     container_name: druid-broker
     environment:
-      - DRUID_XMS=${DRUID_XMS}
-      - DRUID_XMX=${DRUID_XMX}
+      - druid_xms=${DRUID_XMS}
+      - druid_xmx=${DRUID_XMX}
+      - druid_extensions_loadList=["postgresql-metadata-storage"]
     ports:
       - "${DRUID_BROKER_PORT}:8082"
     depends_on:
@@ -169,8 +171,9 @@ services:
     image: apache/druid:28.0.0
     container_name: druid-historical
     environment:
-      - DRUID_XMS=${DRUID_XMS}
-      - DRUID_XMX=${DRUID_XMX}
+      - druid_xms=${DRUID_XMS}
+      - druid_xmx=${DRUID_XMX}
+      - druid_extensions_loadList=["postgresql-metadata-storage"]
     ports:
       - "${DRUID_HISTORICAL_PORT}:8083"
     depends_on:
@@ -184,8 +187,9 @@ services:
     image: apache/druid:28.0.0
     container_name: druid-middlemanager
     environment:
-      - DRUID_XMS=${DRUID_XMS}
-      - DRUID_XMX=${DRUID_XMX}
+      - druid_xms=${DRUID_XMS}
+      - druid_xmx=${DRUID_XMX}
+      - druid_extensions_loadList=["postgresql-metadata-storage"]
     ports:
       - "${DRUID_MIDDLEMANAGER_PORT}:8091"
     depends_on:
@@ -199,8 +203,9 @@ services:
     image: apache/druid:28.0.0
     container_name: druid-router
     environment:
-      - DRUID_XMS=${DRUID_XMS}
-      - DRUID_XMX=${DRUID_XMX}
+      - druid_xms=${DRUID_XMS}
+      - druid_xmx=${DRUID_XMX}
+      - druid_extensions_loadList=["postgresql-metadata-storage"]
     ports:
       - "${DRUID_ROUTER_PORT}:8888"
     depends_on:
@@ -317,5 +322,4 @@ volumes:
   postgres-db-volume:
   mongo-data:
   mongo-config:
-  druid-data-new:   # new fresh volume
-
+  druid-data-new:
