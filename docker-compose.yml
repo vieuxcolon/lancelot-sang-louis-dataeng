@@ -140,14 +140,14 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DRUID_XMS: 512M
-      DRUID_XMX: 2G
-      DRUID_METADATA_STORAGE_TYPE: postgresql
-      DRUID_METADATA_STORAGE_CONNECTOR_CONNECTURI: jdbc:postgresql://postgres:5432/druid
-      DRUID_METADATA_STORAGE_CONNECTOR_USER: druid
-      DRUID_METADATA_STORAGE_CONNECTOR_PASSWORD: druid
-      DRUID_EXTENSIONS_LOADLIST: ["postgresql-metadata-storage"]
-    ports:
+      druid_xms: ${druid_xms}
+      druid_xmx: ${druid_xmx}
+      druid_metadata_storage_type: ${druid_metadata_storage_type}
+      druid_metadata_storage_connector_connectURI: ${druid_metadata_storage_connector_connectURI}
+      druid_metadata_storage_connector_user: ${druid_metadata_storage_connector_user}
+      druid_metadata_storage_connector_password: ${druid_metadata_storage_connector_password}
+      druid_extensions_loadList: ${druid_extensions_loadList}
+     ports:
       - "8081:8081"
     volumes:
       - druiddata:/opt/druid/var
