@@ -4,6 +4,7 @@
 # such as downloading data, unzipping data, and loading it into a PostgreSQL database
 # ===========================================================================================================
 # dag_data_fetch.py
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
