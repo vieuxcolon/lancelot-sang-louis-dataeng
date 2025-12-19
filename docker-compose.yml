@@ -13,16 +13,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET}
-    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+    AIRFLOW_CONFIG: "/opt/airflow/config/airflow.cfg"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./config:/opt/airflow/config
     - ./plugins:/opt/airflow/plugins
     - ./data:/opt/airflow/data
-  user: "${AIRFLOW_UID}:0"
+  user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     redis:
       condition: service_healthy
@@ -35,7 +35,6 @@ x-airflow-common: &airflow-common
 # SERVICES
 ##############################
 services:
-
   ##############################
   # PostgreSQL
   ##############################
@@ -52,7 +51,7 @@ services:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./init-druid.sql:/docker-entrypoint-initdb.d/init-druid.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
       retries: 5
       start_period: 5s
@@ -66,11 +65,14 @@ services:
   redis:
     image: redis:7.2-bookworm
     container_name: redis
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 30s
       retries: 50
+      start_period: 30s
     restart: always
     networks:
       - airflow-network
@@ -106,7 +108,7 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: ${ME_CONFIG_BASICAUTH_USERNAME}
       ME_CONFIG_BASICAUTH_PASSWORD: ${ME_CONFIG_BASICAUTH_PASSWORD}
       ME_CONFIG_MONGODB_SERVER: mongo
-      ME_CONFIG_MONGODB_PORT: ${ME_CONFIG_MONGODB_PORT}
+      ME_CONFIG_MONGODB_PORT: "${ME_CONFIG_MONGODB_PORT}"
     ports:
       - "${ME_PORT}:8081"
     depends_on:
@@ -116,24 +118,22 @@ services:
       - airflow-network
 
   ##############################
-  # Zookeeper
+  # Druid Multi-Service (v28.0.0)
   ##############################
   zookeeper:
     image: zookeeper:3.5.10
     container_name: zookeeper
     ports:
       - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
     restart: always
     networks:
       - airflow-network
 
-  ##############################
-  # Druid Coordinator
-  ##############################
   druid-coordinator:
     image: apache/druid:28.0.0
     container_name: druid-coordinator
-    command: coordinator
     environment:
       druid_xms: ${druid_xms}
       druid_xmx: ${druid_xmx}
@@ -141,25 +141,22 @@ services:
       druid_metadata_storage_connector_connectURI: ${druid_metadata_storage_connector_connectURI}
       druid_metadata_storage_connector_user: ${druid_metadata_storage_connector_user}
       druid_metadata_storage_connector_password: ${druid_metadata_storage_connector_password}
-      druid_extensions_loadList: ${druid_extensions_loadList}
+      druid_extensions_loadList: '["postgresql-metadata-storage"]'
     ports:
       - "${DRUID_COORDINATOR_PORT}:8081"
-    volumes:
-      - druid-data:/opt/druid/var
     depends_on:
       - zookeeper
       - postgres
+    volumes:
+      - druid-data-new:/opt/druid/var
+    command: coordinator
     restart: unless-stopped
     networks:
       - airflow-network
 
-  ##############################
-  # Druid Broker
-  ##############################
   druid-broker:
     image: apache/druid:28.0.0
     container_name: druid-broker
-    command: broker
     environment:
       druid_xms: ${druid_xms}
       druid_xmx: ${druid_xmx}
@@ -167,17 +164,14 @@ services:
       - "${DRUID_BROKER_PORT}:8082"
     depends_on:
       - druid-coordinator
+    command: broker
     restart: unless-stopped
     networks:
       - airflow-network
 
-  ##############################
-  # Druid Historical
-  ##############################
   druid-historical:
     image: apache/druid:28.0.0
     container_name: druid-historical
-    command: historical
     environment:
       druid_xms: ${druid_xms}
       druid_xmx: ${druid_xmx}
@@ -185,17 +179,14 @@ services:
       - "${DRUID_HISTORICAL_PORT}:8083"
     depends_on:
       - druid-coordinator
+    command: historical
     restart: unless-stopped
     networks:
       - airflow-network
 
-  ##############################
-  # Druid MiddleManager
-  ##############################
   druid-middlemanager:
     image: apache/druid:28.0.0
     container_name: druid-middlemanager
-    command: middleManager
     environment:
       druid_xms: ${druid_xms}
       druid_xmx: ${druid_xmx}
@@ -203,17 +194,14 @@ services:
       - "${DRUID_MIDDLEMANAGER_PORT}:8091"
     depends_on:
       - druid-coordinator
+    command: middleManager
     restart: unless-stopped
     networks:
       - airflow-network
 
-  ##############################
-  # Druid Router
-  ##############################
   druid-router:
     image: apache/druid:28.0.0
     container_name: druid-router
-    command: router
     environment:
       druid_xms: ${druid_xms}
       druid_xmx: ${druid_xmx}
@@ -221,19 +209,25 @@ services:
       - "${DRUID_ROUTER_PORT}:8888"
     depends_on:
       - druid-coordinator
+    command: router
     restart: unless-stopped
     networks:
       - airflow-network
 
   ##############################
-  # Airflow Services
+  # Airflow Core
   ##############################
   airflow-apiserver:
     <<: *airflow-common
-    container_name: airflow-apiserver
     command: api-server
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: always
     depends_on:
       airflow-init:
@@ -241,7 +235,6 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
-    container_name: airflow-scheduler
     command: scheduler
     restart: always
     depends_on:
@@ -250,7 +243,6 @@ services:
 
   airflow-dag-processor:
     <<: *airflow-common
-    container_name: airflow-dag-processor
     command: dag-processor
     restart: always
     depends_on:
@@ -259,7 +251,6 @@ services:
 
   airflow-worker:
     <<: *airflow-common
-    container_name: airflow-worker
     command: celery worker
     environment:
       <<: *airflow-common-env
@@ -273,30 +264,35 @@ services:
 
   airflow-triggerer:
     <<: *airflow-common
-    container_name: airflow-triggerer
     command: triggerer
     restart: always
     depends_on:
       airflow-init:
         condition: service_completed_successfully
 
+  ##############################
+  # Airflow Init (FIXED)
+  ##############################
   airflow-init:
     <<: *airflow-common
-    container_name: airflow-init
     entrypoint: /bin/bash
     command: >
-      -c "
       mkdir -p /opt/airflow/{logs,dags,plugins,config,data} &&
-      chown -R ${AIRFLOW_UID}:0 /opt/airflow &&
-      /entrypoint airflow db migrate &&
-      /entrypoint airflow users create
-        --username ${_AIRFLOW_WWW_USER_USERNAME}
-        --password ${_AIRFLOW_WWW_USER_PASSWORD}
-        --firstname Airflow
-        --lastname Admin
-        --role Admin
+      chown -R "${AIRFLOW_UID}:0" /opt/airflow/ &&
+      /entrypoint airflow db upgrade &&
+      /entrypoint airflow users create \
+        --username ${_AIRFLOW_WWW_USER_USERNAME:-airflow} \
+        --password ${_AIRFLOW_WWW_USER_PASSWORD:-airflow} \
+        --firstname Airflow \
+        --lastname Admin \
+        --role Admin \
         --email admin@example.com
-      "
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
     user: "0:0"
     networks:
       - airflow-network
@@ -306,7 +302,7 @@ services:
   ##############################
   pgadmin:
     image: elestio/pgadmin
-    container_name: pgadmin
+    container_name: pgadmin_airflow
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
@@ -326,4 +322,4 @@ volumes:
   postgres-db-volume:
   mongo-data:
   mongo-config:
-  druid-data:
+  druid-data-new:
