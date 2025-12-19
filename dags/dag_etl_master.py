@@ -4,6 +4,7 @@
 # such as downloading data, cleaning it, and loading it into a PostgreSQL database
 # ========================================================================
 # ETL Master: dag_etl_master.py
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
