@@ -3,7 +3,7 @@
 # It uses utility functions defined in etl_utils.py to perform tasks
 # such as downloading data, unzipping data, and loading it into a PostgreSQL database
 # ===========================================================================================================
-# ETL Master: dag_etl_master.py
+# dag_data_fetch.py
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
