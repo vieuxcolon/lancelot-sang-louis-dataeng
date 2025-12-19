@@ -10,7 +10,7 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from datetime import datetime
 
 with DAG(
-    dag_id="dag_etl_master",
+    dag_id="dag_etl_master_v1",
     start_date=datetime(2025, 1, 1),
     schedule=None,
     catchup=False,
