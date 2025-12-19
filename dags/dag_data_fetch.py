@@ -1,3 +1,9 @@
+# =================== dag_data_fetch.py ====================================================================
+# This is the dag responsible for downloading ariab, workaccidents and fatalities data into the landing zone
+# It uses utility functions defined in etl_utils.py to perform tasks
+# such as downloading data, unzipping data, and loading it into a PostgreSQL database
+# ===========================================================================================================
+# ETL Master: dag_etl_master.py
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
