@@ -420,6 +420,215 @@ def parse_address(raw):
 # CREATE FATALITIES CLEAN
 # =====================================================================================
 
+def create_fatalities_clean():
+    src_table = DB_CONFIG["fatalities_table"]
+    dst_table = DB_CONFIG["fatalities_clean_table"]
+    
+    conn = pg_connect()
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    if "employer_address_of_incident" in df.columns:
+        df[["employer","address","zip","city","state"]] = df[
+            "employer_address_of_incident"
+        ].apply(parse_address)
+    else:
+        df[["employer","address","zip","city","state"]] = [None, None, None, None, None]
+
+    df["country"] = "USA"
+
+    keep_cols = [
+        "date_of_incident","employer","address","zip","city","state",
+        "country","victims","hazard_description","fatality_or_catastrophe"
+    ]
+
+    df_clean = df[[c for c in keep_cols if c in df.columns]].copy()
+
+    if "date_of_incident" in df_clean.columns:
+        df_clean["date_of_incident"] = pd.to_datetime(
+            df_clean["date_of_incident"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+    cursor = conn.cursor()
+    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df_clean.columns])
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}"
+        ({", ".join([f'"{c}"' for c in df_clean.columns])})
+        VALUES ({", ".join(["%s"] * len(df_clean.columns))})
+    """
+
+    for _, row in df_clean.iterrows():
+        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created fatalities_clean ({len(df_clean)} rows)")
+
+
+# =====================================================================================
+# CREATE ARIADB CLEAN
+# =====================================================================================
+
+def create_ariadb_clean():
+    src_table = DB_CONFIG["ariadb_table"]
+    dst_table = DB_CONFIG["ariadb_clean_table"]
+
+    conn = pg_connect()
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    col_map = {
+        "numéro_aria": "aria_id",
+        "titre": "title",
+        "type_de_publication": "publication_type",
+        "date": "incident_date",
+        "code_naf": "industry_code",
+        "pays": "country",
+        "départment": "department",
+        "commune": "municipality",
+        "type_d'accident": "accident_type",
+        "type_évènement": "event_type",
+        "classe_de_danger_clp": "hazard_class",
+    }
+
+    existing = [c for c in col_map if c in df.columns]
+    df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
+
+    if "incident_date" in df.columns:
+        df["incident_date"] = pd.to_datetime(
+            df["incident_date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+    if "aria_id" in df.columns:
+        df.drop_duplicates(subset=["aria_id"], inplace=True)
+
+    cursor = conn.cursor()
+    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
+
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}"
+        ({", ".join([f'"{c}"' for c in df.columns])})
+        VALUES ({", ".join(["%s"] * len(df.columns))})
+    """
+
+    for _, row in df.iterrows():
+        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created ariadb_clean ({len(df)} rows)")
+
+# =====================================================================================
+# CREATE WORKACCIDENTS CLEAN
+# =====================================================================================
+
+def create_workaccidents_clean():
+    src_table = DB_CONFIG["workaccidents_table"]
+    dst_table = "workaccidents_clean"
+
+    conn = pg_connect()
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    if "final_narrative" in df.columns:
+        df.drop(columns=["final_narrative"], inplace=True)
+
+    date_col = "eventdate" if "eventdate" in df.columns else None
+    if date_col:
+        df["accident_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
+    else:
+        df["accident_date"] = None
+
+    df["country"] = "USA"
+
+    selected_columns = [
+        "id", "upa", "accident_date", "employer", "address1", "address2",
+        "city", "state", "zip", "latitude", "longitude", "primary_naics",
+        "hospitalized", "amputation", "loss_of_eye", "inspection",
+        "nature", "naturetitle", "part_of_body", "part_of_body_title",
+        "event", "eventtitle", "source", "sourcetitle",
+        "secondary_source", "secondary_source_title",
+        "federalstate", "country",
+    ]
+
+    df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
+
+    cursor = conn.cursor()
+    cursor.execute('DROP TABLE IF EXISTS "workaccidents_clean"')
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df_clean.columns])
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}"
+        ({", ".join([f'"{c}"' for c in df_clean.columns])})
+        VALUES ({", ".join(["%s"] * len(df_clean.columns))})
+    """
+
+    for _, row in df_clean.iterrows():
+        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created workaccidents_clean ({len(df_clean)} rows)")
+
+
+# =====================================================================================
+# DATABASE PROFILING
+# =====================================================================================
+
+def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
+    os.makedirs(output_dir, exist_ok=True)
+
+    tables = [
+        db_config["ariadb_clean_table"],
+        db_config["fatalities_clean_table"],
+        "workaccidents_clean",
+    ]
+
+    conn = pg_connect()
+
+
+    profile_records = []
+
+    for table in tables:
+        df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
+
+        for col in df.columns:
+            profile_records.append({
+                "table": table,
+                "column": col,
+                "dtype": str(df[col].dtype),
+                "non_null": df[col].notna().sum(),
+                "missing": df[col].isna().sum(),
+                "unique": df[col].nunique(dropna=True),
+                "top_5": df[col].value_counts(dropna=False).head(5).to_dict(),
+            })
+
+    df_prof = pd.DataFrame(profile_records)
+    profile_path = os.path.join(output_dir, "db_profiling_report.csv")
+    df_prof.to_csv(profile_path, index=False)
+
+    print(f"✔ Profile saved to {profile_path}")
+    conn.close()
+
+
+# =====================================================================================
+# STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
+# =====================================================================================
+
 def create_dimensions_and_fact():
 
     conn = pg_connect()
@@ -677,6 +886,7 @@ def create_dimensions_and_fact():
     conn.close()
 
     print(f"✔ FINAL SAFE STAR SCHEMA CREATED — {len(df_fact)} FACT ROWS")
+
 
 # =====================================================================================
 # STAR SCHEMA TESTS
