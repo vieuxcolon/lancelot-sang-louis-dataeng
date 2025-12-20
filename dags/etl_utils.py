@@ -630,7 +630,6 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 
 def create_dimensions_and_fact():
-
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -659,7 +658,7 @@ def create_dimensions_and_fact():
     df_dates["month"] = df_dates["date"].dt.month
     df_dates["day"] = df_dates["date"].dt.day
     df_dates["quarter"] = df_dates["date"].dt.quarter
-    df_dates["date_id"] = range(1, len(df_dates) + 1)
+    df_dates["date_id"] = range(1, len(df_dates)+1)
 
     cur.execute("DROP TABLE IF EXISTS dim_date")
     cur.execute("""
@@ -725,6 +724,9 @@ def create_dimensions_and_fact():
     df_emp["employer"] = normalize_text(df_emp["employer"])
     df_emp["employer_id"] = range(1, len(df_emp)+1)
 
+    # Add UNKNOWN employer
+    df_emp = pd.concat([pd.DataFrame([{"employer_id": 0, "employer": "UNKNOWN"}]), df_emp], ignore_index=True)
+
     cur.execute("DROP TABLE IF EXISTS dim_employer")
     cur.execute("""
         CREATE TABLE dim_employer (
@@ -751,6 +753,7 @@ def create_dimensions_and_fact():
 
     df_haz = pd.concat(hazard_frames, ignore_index=True).dropna().drop_duplicates().reset_index(drop=True)
     df_haz["hazard_id"] = range(1, len(df_haz)+1)
+    df_haz = pd.concat([pd.DataFrame([{"hazard_id": 0, "hazard": "UNKNOWN"}]), df_haz], ignore_index=True)
 
     cur.execute("DROP TABLE IF EXISTS dim_hazard")
     cur.execute("""
@@ -777,6 +780,7 @@ def create_dimensions_and_fact():
     df_act = pd.concat(accident_frames, ignore_index=True).dropna().drop_duplicates().reset_index(drop=True)
     df_act["accident_type"] = normalize_text(df_act["accident_type"])
     df_act["accident_type_id"] = range(1, len(df_act)+1)
+    df_act = pd.concat([pd.DataFrame([{"accident_type_id": 0, "accident_type": "UNKNOWN"}]), df_act], ignore_index=True)
 
     cur.execute("DROP TABLE IF EXISTS dim_accident_type")
     cur.execute("""
@@ -800,6 +804,7 @@ def create_dimensions_and_fact():
         # DATE
         df2[date_col] = pd.to_datetime(df2.get(date_col), errors="coerce")
         df2 = df2.merge(df_dates[["date", "date_id"]], left_on=date_col, right_on="date", how="left")
+        df2["date_id"] = df2["date_id"].fillna(0).astype(int)
 
         # LOCATION
         for col in ["municipality", "department", "country"]:
@@ -807,26 +812,30 @@ def create_dimensions_and_fact():
                 df2[col] = None
         df2 = df2.merge(df_loc[["municipality","department","country","location_id"]],
                         on=["municipality","department","country"], how="left")
+        df2["location_id"] = df2["location_id"].fillna(0).astype(int)
 
         # EMPLOYER
         if employer_col and employer_col in df2.columns:
             df2["employer"] = normalize_text(df2["employer"])
             df2 = df2.merge(df_emp, on="employer", how="left")
+            df2["employer_id"] = df2["employer_id"].fillna(0).astype(int)
         else:
-            df2["employer_id"] = None
+            df2["employer_id"] = 0
 
         # HAZARD
         if hazard_col and hazard_col in df2.columns:
             df2 = df2.merge(df_haz, left_on=hazard_col, right_on="hazard", how="left")
+            df2["hazard_id"] = df2["hazard_id"].fillna(0).astype(int)
         else:
-            df2["hazard_id"] = None
+            df2["hazard_id"] = 0
 
         # ACCIDENT TYPE
         if acc_type_col and acc_type_col in df2.columns:
             df2[acc_type_col] = normalize_text(df2[acc_type_col])
             df2 = df2.merge(df_act, left_on=acc_type_col, right_on="accident_type", how="left")
+            df2["accident_type_id"] = df2["accident_type_id"].fillna(0).astype(int)
         else:
-            df2["accident_type_id"] = None
+            df2["accident_type_id"] = 0
 
         return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id"]]
 
@@ -856,19 +865,12 @@ def create_dimensions_and_fact():
         cur.execute("""
             INSERT INTO fact_accidents (date_id, employer_id, location_id, hazard_id, accident_type_id)
             VALUES (%s, %s, %s, %s, %s)
-        """, [
-            None if pd.isna(r.date_id) else int(r.date_id),
-            None if pd.isna(r.employer_id) else int(r.employer_id),
-            None if pd.isna(r.location_id) else int(r.location_id),
-            None if pd.isna(r.hazard_id) else int(r.hazard_id),
-            None if pd.isna(r.accident_type_id) else int(r.accident_type_id),
-        ])
+        """, [int(r.date_id), int(r.employer_id), int(r.location_id), int(r.hazard_id), int(r.accident_type_id)])
 
     conn.commit()
     conn.close()
 
-    print(f"✔ Star schema created — {len(df_fact)} fact rows with FK integrity checks")
-
+    print(f"✔ Star schema created — {len(df_fact)} fact rows with UNKNOWN IDs for missing values")
 
 # =====================================================================================
 # STAR SCHEMA TESTS
