@@ -655,22 +655,171 @@ def create_dimensions_and_fact():
     def extract_employer(df):
         return df[["employer"]] if "employer" in df.columns else pd.DataFrame(columns=["employer"])
 
-    # -------------------------
-    # DROP TABLES (FACT FIRST)
-    # -------------------------
+    
+    # ==================================================
+    # DROP TABLES (DEPENDENCY ORDER)
+    # ==================================================
     cur.execute("DROP TABLE IF EXISTS fact_accidents")
-    cur.execute("DROP TABLE IF EXISTS dim_date")
     cur.execute("DROP TABLE IF EXISTS dim_location")
+    cur.execute("DROP TABLE IF EXISTS country_synonym")
+    cur.execute("DROP TABLE IF EXISTS dim_country")
+    cur.execute("DROP TABLE IF EXISTS original_dim_location")
+    cur.execute("DROP TABLE IF EXISTS dim_date")
     cur.execute("DROP TABLE IF EXISTS dim_employer")
     cur.execute("DROP TABLE IF EXISTS dim_hazard")
     cur.execute("DROP TABLE IF EXISTS dim_accident_type")
+    conn.commit()
 
-    # -------------------------
-    # LOAD CLEAN TABLES
-    # -------------------------
-    df_aria = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
+    # ==================================================
+    # LOAD CLEAN SOURCE TABLES
+    # ==================================================
+    df_aria  = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
     df_fatal = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["fatalities_clean_table"]}"', conn)
-    df_work = pd.read_sql("SELECT * FROM workaccidents_clean", conn)
+    df_work  = pd.read_sql("SELECT * FROM workaccidents_clean", conn)
+
+    # ==================================================
+    # ORIGINAL_DIM_LOCATION (RAW STAGING)
+    # ==================================================
+    df_loc = pd.concat([
+        df_aria[["municipality","department","country"]],
+        df_fatal[["city","state","country"]].rename(
+            columns={"city":"municipality","state":"department"}
+        ),
+        df_work[["city","state","country"]].rename(
+            columns={"city":"municipality","state":"department"}
+        ),
+    ], ignore_index=True).drop_duplicates().reset_index(drop=True)
+
+    df_loc.insert(0, "location_id", range(1, len(df_loc) + 1))
+
+    cur.execute("""
+        CREATE TABLE original_dim_location (
+            location_id INT PRIMARY KEY,
+            municipality TEXT,
+            department TEXT,
+            country TEXT
+        );
+    """)
+
+    for _, r in df_loc.iterrows():
+        cur.execute(
+            "INSERT INTO original_dim_location VALUES (%s,%s,%s,%s)",
+            list(r)
+        )
+    conn.commit()
+
+    # ==================================================
+    # DIM COUNTRY
+    # ==================================================
+    cur.execute("""
+        CREATE TABLE dim_country (
+            country_id INT PRIMARY KEY,
+            country_name TEXT UNIQUE,
+            country_code TEXT
+        );
+    """)
+    conn.commit()
+
+    cur.execute("""INSERT INTO dim_country VALUES
+        (1,'United States','US'),
+        (2,'United Kingdom','GB'),
+        (3,'France','FR'),
+        (4,'Canada','CA'),
+        (5,'Germany','DE'),
+        (6,'Italy','IT'),
+        (7,'Spain','ES'),
+        (8,'Switzerland','CH'),
+        (9,'Netherlands','NL'),
+        (10,'Belgium','BE'),
+        (11,'China','CN'),
+        (12,'Russia','RU'),
+        (13,'Japan','JP'),
+        (14,'India','IN'),
+        (15,'Brazil','BR'),
+        (16,'Australia','AU'),
+        (17,'South Africa','ZA'),
+        (18,'Mexico','MX'),
+        (19,'UNKNOWN','XX')
+    """)
+
+    # ==================================================
+    # COUNTRY SYNONYMS
+    # ==================================================
+    cur.execute("""
+        CREATE TABLE country_synonym (
+            synonym TEXT PRIMARY KEY,
+            country_id INT REFERENCES dim_country(country_id)
+        );
+    """)
+
+    cur.execute("""
+        INSERT INTO country_synonym
+        SELECT UPPER(s), c.country_id
+        FROM (
+            VALUES
+            ('USA',1),('US',1),('ETATS-UNIS',1),('UNITED STATES',1),
+            ('UK',2),('ROYAUME-UNI',2),('UNITED KINGDOM',2),
+            ('ALLEMAGNE',5),('GERMANY',5),
+            ('ITALIE',6),('ITALY',6),
+            ('ESPAGNE',7),('SPAIN',7),
+            ('SUISSE',8),
+            ('PAYS-BAS',9),
+            ('BELGIQUE',10),
+            ('CHINE',11),
+            ('RUSSIE',12)
+        ) AS t(s,c)
+        JOIN dim_country c ON c.country_id = t.c;
+    """)
+    conn.commit()
+
+    # ==================================================
+    # DIM LOCATION (CANONICAL)
+    # ==================================================
+    cur.execute("""
+        CREATE TABLE dim_location (
+            location_id INT PRIMARY KEY,
+            municipality TEXT,
+            department TEXT,
+            country_id INT REFERENCES dim_country(country_id)
+        );
+    """)
+    conn.commit()
+
+    def load_dim_location(conn):
+        """
+        Populate dim_location from original_dim_location
+        using country_synonym → dim_country mapping.
+        Fully deterministic, no CASE statements.
+        """
+
+    sql = """
+    INSERT INTO dim_location (
+        location_id,
+        municipality,
+        department,
+        country_id
+    )
+    SELECT
+        o.location_id,
+        UPPER(TRIM(o.municipality)) AS municipality,
+        UPPER(TRIM(o.department)) AS department,
+        COALESCE(cs.country_id, 19) AS country_id
+    FROM original_dim_location o
+    LEFT JOIN country_synonym cs
+        ON UPPER(TRIM(o.country)) = cs.synonym
+    ON CONFLICT (location_id) DO NOTHING;
+    """
+
+    cur = conn.cursor()
+    cur.execute(sql)
+    conn.commit()
+
+
+    # ==================================================
+    # CONTINUE WITH EXISTING DIMENSIONS + FACT
+    # ==================================================
+    # dim_date, dim_employer, dim_hazard, dim_accident_type
+    # fact_accidents (unchanged logic)
 
     # ==================================================
     # DIM DATE
@@ -703,47 +852,6 @@ def create_dimensions_and_fact():
         cur.execute(
             "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s,%s)",
             [r.date_id, r.date, r.year, r.month, r.day, r.quarter]
-        )
-
-    # ==================================================
-    # DIM LOCATION
-    # ==================================================
-    COUNTRY_MAP = {
-        "ETATS-UNIS": "USA",
-        "UNITED STATES": "USA",
-        "ROYAUME-UNI": "UK",
-        "GRANDE-BRETAGNE": "UK",
-        "FRANCE": "FRANCE",
-        "ALLEMAGNE": "GERMANY",
-        "CHINE": "CHINA",
-        "CANADA": "CANADA",
-        "ITALIE": "ITALY",
-        "BELGIQUE": "BELGIUM",
-        "RUSSIE": "RUSSIA",
-    }
-
-    df_loc = pd.concat([
-        safe_loc(df_aria, {"municipality":"municipality","department":"department","country":"country"}, COUNTRY_MAP),
-        safe_loc(df_fatal, {"municipality":"city","department":"state","country":"country"}, COUNTRY_MAP),
-        safe_loc(df_work, {"municipality":"city","department":"state","country":"country"}, COUNTRY_MAP),
-    ], ignore_index=True).drop_duplicates().reset_index(drop=True)
-
-    df_loc.insert(0, "location_id", range(1, len(df_loc) + 1))
-
-    cur.execute("""
-        CREATE TABLE dim_location (
-            location_id INT PRIMARY KEY,
-            municipality TEXT,
-            department TEXT,
-            country TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_location VALUES (0,'UNKNOWN','UNKNOWN','UNKNOWN')")
-
-    for _, r in df_loc.iterrows():
-        cur.execute(
-            "INSERT INTO dim_location VALUES (%s,%s,%s,%s)",
-            [r.location_id, r.municipality, r.department, r.country]
         )
 
     # ==================================================
@@ -882,11 +990,9 @@ def create_dimensions_and_fact():
     for _, r in df_fact.iterrows():
         cur.execute("INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s)", list(r))
 
-    conn.commit()
+    
     conn.close()
-
-    print(f"✔ FINAL SAFE STAR SCHEMA CREATED — {len(df_fact)} FACT ROWS")
-
+    print("✔ Fully explicit star schema created (no placeholders)")
 
 # =====================================================================================
 # STAR SCHEMA TESTS
