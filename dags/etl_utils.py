@@ -626,7 +626,7 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 
 
 # =====================================================================================
-# STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
+# STAR SCHEMA CREATION — SAFE, STABLE VERSION
 # =====================================================================================
 
 def create_dimensions_and_fact():
@@ -634,11 +634,23 @@ def create_dimensions_and_fact():
     conn = pg_connect()
     cur = conn.cursor()
 
+    # -------------------------
+    # Helpers
+    # -------------------------
     def normalize_text(s):
         return s.astype(str).str.strip().str.upper()
 
+    def safe_loc(df, mapping):
+        return pd.DataFrame({
+            k: df[v] if v in df.columns else None
+            for k, v in mapping.items()
+        })
+
+    def extract_employer(df):
+        return df[["employer"]] if "employer" in df.columns else pd.DataFrame(columns=["employer"])
+
     # --------------------------------------------------
-    # DROP FACT FIRST (avoid dependency errors)
+    # DROP TABLES (FACT FIRST)
     # --------------------------------------------------
     cur.execute("DROP TABLE IF EXISTS fact_accidents")
     cur.execute("DROP TABLE IF EXISTS dim_date")
@@ -690,11 +702,6 @@ def create_dimensions_and_fact():
     # ==================================================
     # DIM LOCATION (UNKNOWN = 0)
     # ==================================================
-    def safe_loc(df, mapping):
-        return pd.DataFrame({
-            k: df[v] if v in df.columns else None for k, v in mapping.items()
-        })
-
     df_loc = pd.concat([
         safe_loc(df_aria, {"municipality":"municipality","department":"department","country":"country"}),
         safe_loc(df_fatal, {"municipality":"city","department":"state","country":"country"}),
@@ -723,9 +730,6 @@ def create_dimensions_and_fact():
     # ==================================================
     # DIM EMPLOYER (UNKNOWN = 0)
     # ==================================================
-    def extract_employer(df):
-        return df[["employer"]] if "employer" in df.columns else pd.DataFrame(columns=["employer"])
-
     df_emp = pd.concat([
         extract_employer(df_aria),
         extract_employer(df_fatal),
@@ -799,7 +803,7 @@ def create_dimensions_and_fact():
         cur.execute("INSERT INTO dim_accident_type VALUES (%s,%s)", [r.accident_type_id, r.accident_type])
 
     # ==================================================
-    # FACT TABLE (NO FKs, SAFE DEFAULTS)
+    # FACT TABLE
     # ==================================================
     cur.execute("""
         CREATE TABLE fact_accidents (
@@ -811,33 +815,46 @@ def create_dimensions_and_fact():
         );
     """)
 
-    def build_fact(df, date_col, employer_col, hazard_col, acc_col):
+    # -------------------------
+    # SAFE FACT BUILDER
+    # -------------------------
+    def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
         df2 = df.copy()
 
-        df2[date_col] = pd.to_datetime(df2.get(date_col), errors="coerce")
-        df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
+        if date_col in df2.columns:
+            df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
+            df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
 
         for col in ["municipality","department","country"]:
             if col not in df2.columns:
                 df2[col] = None
 
-        df2 = df2.merge(df_loc, on=["municipality","department","country"], how="left")
+        df2 = df2.merge(
+            df_loc[["municipality","department","country","location_id"]],
+            on=["municipality","department","country"],
+            how="left"
+        )
 
-        if employer_col in df2.columns:
-            df2["employer"] = normalize_text(df2["employer"])
-            df2 = df2.merge(df_emp, on="employer", how="left")
+        if employer_col and employer_col in df2.columns:
+            df2[employer_col] = normalize_text(df2[employer_col])
+            df2 = df2.merge(df_emp, left_on=employer_col, right_on="employer", how="left")
 
-        if hazard_col in df2.columns:
+        if hazard_col and hazard_col in df2.columns:
             df2 = df2.merge(df_haz, left_on=hazard_col, right_on="hazard", how="left")
 
-        if acc_col in df2.columns:
-            df2[acc_col] = normalize_text(df2[acc_col])
-            df2 = df2.merge(df_act, left_on=acc_col, right_on="accident_type", how="left")
+        if acc_type_col and acc_type_col in df2.columns:
+            df2[acc_type_col] = normalize_text(df2[acc_type_col])
+            df2 = df2.merge(df_act, left_on=acc_type_col, right_on="accident_type", how="left")
 
-        return df2[[
-            "date_id","employer_id","location_id","hazard_id","accident_type_id"
-        ]].fillna(0).astype(int)
+        for col in ["date_id","employer_id","location_id","hazard_id","accident_type_id"]:
+            if col not in df2.columns:
+                df2[col] = 0
 
+        return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id"]].fillna(0).astype(int)
+
+    # --------------------------------------------------
+    # BUILD & INSERT FACTS
+    # --------------------------------------------------
     df_fact = pd.concat([
         build_fact(df_aria, "incident_date", "employer", "hazard_class", None),
         build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
@@ -845,10 +862,7 @@ def create_dimensions_and_fact():
     ])
 
     for _, r in df_fact.iterrows():
-        cur.execute(
-            "INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s)",
-            list(r)
-        )
+        cur.execute("INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s)", list(r))
 
     conn.commit()
     conn.close()
