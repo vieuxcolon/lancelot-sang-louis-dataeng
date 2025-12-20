@@ -869,7 +869,6 @@ def create_dimensions_and_fact():
 
     print(f"✔ Star schema created — {len(df_fact)} fact rows with FK integrity checks")
 
-
 # =====================================================================================
 # STAR SCHEMA TESTS
 # =====================================================================================
