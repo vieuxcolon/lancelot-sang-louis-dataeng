@@ -998,10 +998,37 @@ def create_dimensions_and_fact():
 # STAR SCHEMA TESTS
 # =====================================================================================
 
+def table_exists(conn, table_name):
+    """
+    Check if a table exists in the database.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1 
+            FROM information_schema.tables 
+            WHERE table_name=%s
+        );
+    """, (table_name,))
+    return cur.fetchone()[0]
+
 def min_test_star_schema():
+    """
+    Minimal test of star schema:
+    Shows a few rows of IDs from date, employer, and location dimensions.
+    Safe: skips query if tables don't exist.
+    """
     conn = pg_connect()
 
+    # Check necessary tables
+    required_tables = ["dim_date", "dim_employer", "dim_location"]
+    missing = [t for t in required_tables if not table_exists(conn, t)]
+    if missing:
+        print(f"⚠ Skipping min_test_star_schema: missing tables {missing}")
+        conn.close()
+        return None
 
+    # Run minimal query
     query = """
         SELECT d.date_id, e.employer_id, l.location_id
         FROM dim_date d
@@ -1009,36 +1036,57 @@ def min_test_star_schema():
         JOIN dim_location l ON l.location_id IS NOT NULL
         LIMIT 5;
     """
-
     df_test = pd.read_sql(query, conn)
     conn.close()
 
     print("✔ min_test_star_schema result:")
     print(df_test)
+    return df_test
 
-
-def full_test_star_schema():
+def full_test_star_schema(limit=20):
+    """
+    Full star schema test:
+    Joins all dimensions and shows a few fact rows.
+    Handles the new dim_country/dim_location setup.
+    """
     conn = pg_connect()
 
-    sql = """
+    # Check tables
+    required_tables = [
+        "fact_accidents",
+        "dim_date",
+        "dim_employer",
+        "dim_location",
+        "dim_hazard",
+        "dim_accident_type",
+        "dim_country"
+    ]
+    missing = [t for t in required_tables if not table_exists(conn, t)]
+    if missing:
+        print(f"⚠ Skipping full_test_star_schema: missing tables {missing}")
+        conn.close()
+        return None
+
+    # Full join query
+    sql = f"""
         SELECT 
             f.date_id, d.date, d.year, d.month,
             f.employer_id, e.employer,
-            f.location_id, l.municipality, l.department, l.country,
+            f.location_id, l.city, l.region, c.country_name,
             f.hazard_id, h.hazard,
             f.accident_type_id, a.accident_type
         FROM fact_accidents f
         LEFT JOIN dim_date d ON f.date_id = d.date_id
         LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
         LEFT JOIN dim_location l ON f.location_id = l.location_id
+        LEFT JOIN dim_country c ON l.country_id = c.country_id
         LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
         LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-        LIMIT 20;
+        LIMIT {limit};
     """
-
     df = pd.read_sql(sql, conn)
     conn.close()
 
-    print("\n=== Full Star Schema Test (20 rows) ===")
+    print(f"\n=== Full Star Schema Test ({limit} rows) ===")
     print(df)
     return df
