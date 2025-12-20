@@ -699,17 +699,45 @@ def create_dimensions_and_fact():
             [r.date_id, r.date, r.year, r.month, r.day, r.quarter]
         )
 
+
     # ==================================================
-    # DIM LOCATION (UNKNOWN = 0)
+    # DIM LOCATION (UNKNOWN = 0) — NORMALIZED & MAPPED
     # ==================================================
+    def normalize_loc_text(s):
+        return s.astype(str).str.strip().str.upper()
+    
+    # Country mapping to unify names
+    COUNTRY_MAP = {
+        "ETATS-UNIS": "USA",
+        "UNITED STATES": "USA",
+        "ROYAUME-UNI": "UK",
+        "GRANDE-BRETAGNE": "UK",
+        "FRANCE": "FRANCE",
+        "ALLEMAGNE": "GERMANY",
+        "CHINE": "CHINA",
+        "CANADA": "CANADA",
+        "ITALIE": "ITALY",
+        "BELGIQUE": "BELGIUM",
+        "RUSSIE": "RUSSIA",
+    }
+    
+    def safe_loc(df, mapping):
+        df_loc = pd.DataFrame({k: df[v] if v in df.columns else None for k, v in mapping.items()})
+        for col in ["municipality", "department", "country"]:
+            if col in df_loc.columns:
+                df_loc[col] = normalize_loc_text(df_loc[col])
+        if "country" in df_loc.columns:
+            df_loc["country"] = df_loc["country"].map(lambda x: COUNTRY_MAP.get(x, x))
+        return df_loc
+    
     df_loc = pd.concat([
         safe_loc(df_aria, {"municipality":"municipality","department":"department","country":"country"}),
         safe_loc(df_fatal, {"municipality":"city","department":"state","country":"country"}),
         safe_loc(df_work, {"municipality":"city","department":"state","country":"country"}),
     ], ignore_index=True).drop_duplicates().reset_index(drop=True)
-
+    
     df_loc.insert(0, "location_id", range(1, len(df_loc) + 1))
-
+    
     cur.execute("""
         CREATE TABLE dim_location (
             location_id INT PRIMARY KEY,
@@ -718,9 +746,10 @@ def create_dimensions_and_fact():
             country TEXT
         );
     """)
-
+    
+    # Insert UNKNOWN row
     cur.execute("INSERT INTO dim_location VALUES (0,'UNKNOWN','UNKNOWN','UNKNOWN')")
-
+    
     for _, r in df_loc.iterrows():
         cur.execute(
             "INSERT INTO dim_location VALUES (%s,%s,%s,%s)",
