@@ -632,13 +632,8 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 def create_dimensions_and_fact():
 
     conn = pg_connect()
-    cur = conn.cursor()
 
-    # -------------------------
-    # Helper: normalize strings
-    # -------------------------
-    def normalize_text(s):
-        return s.astype(str).str.strip().str.upper()
+    cur = conn.cursor()
 
     # Load clean tables
     df_aria = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
@@ -718,7 +713,7 @@ def create_dimensions_and_fact():
         """, [int(r.location_id), r.municipality, r.department, r.country])
 
     # =====================================================================
-    # DIM EMPLOYER   ✅ FIX B
+    # DIM EMPLOYER
     # =====================================================================
 
     def extract_employer(df):
@@ -731,7 +726,6 @@ def create_dimensions_and_fact():
         extract_employer(df_work),
     ], ignore_index=True).drop_duplicates().reset_index(drop=True)
 
-    df_emp["employer"] = normalize_text(df_emp["employer"])
     df_emp["employer_id"] = range(1, len(df_emp) + 1)
 
     cur.execute("DROP TABLE IF EXISTS dim_employer")
@@ -780,7 +774,7 @@ def create_dimensions_and_fact():
         """, [int(r.hazard_id), r.hazard])
 
     # =====================================================================
-    # DIM ACCIDENT TYPE   ✅ FIX B
+    # DIM ACCIDENT TYPE
     # =====================================================================
 
     accident_frames = []
@@ -792,7 +786,6 @@ def create_dimensions_and_fact():
     df_act = pd.concat(accident_frames, ignore_index=True) \
                .dropna().drop_duplicates().reset_index(drop=True)
 
-    df_act["accident_type"] = normalize_text(df_act["accident_type"])
     df_act["accident_type_id"] = range(1, len(df_act) + 1)
 
     cur.execute("DROP TABLE IF EXISTS dim_accident_type")
@@ -810,7 +803,7 @@ def create_dimensions_and_fact():
         """, [int(r.accident_type_id), r.accident_type])
 
     # =====================================================================
-    # FACT TABLE   ✅ FIX C
+    # FACT TABLE
     # =====================================================================
 
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
@@ -833,8 +826,10 @@ def create_dimensions_and_fact():
 
         # EMPLOYER
         if employer_col and employer_col in df2.columns:
-            df2["employer"] = normalize_text(df2["employer"])
-            df2 = df2.merge(df_emp, on="employer", how="left")
+            df2 = df2.merge(
+                df_emp[["employer", "employer_id"]],
+                on="employer", how="left"
+            )
         else:
             df2["employer_id"] = None
 
@@ -850,9 +845,8 @@ def create_dimensions_and_fact():
 
         # ACCIDENT TYPE
         if acc_type_col and acc_type_col in df2.columns:
-            df2[acc_type_col] = normalize_text(df2[acc_type_col])
             df2 = df2.merge(
-                df_act,
+                df_act[["accident_type", "accident_type_id"]],
                 left_on=acc_type_col, right_on="accident_type",
                 how="left"
             )
