@@ -500,15 +500,12 @@ def parse_address(raw):
 # ==========================================
 # etl_utils.py (excerpt) – fatalities
 # ==========================================
-
-# ==========================================
-# etl_utils.py (excerpt) – fatalities
-# ==========================================
 import os
 import glob
 import pandas as pd
 import psycopg2
 from etl_utils import DATA_DIR, DB_CONFIG  # DB_CONFIG contains postgres credentials
+import subprocess  # for ls -l debugging
 
 def pg_connect():
     """Connect to PostgreSQL using DB_CONFIG."""
@@ -520,135 +517,87 @@ def pg_connect():
         password=DB_CONFIG["password"]
     )
 
-def create_fatalities_clean() -> pd.DataFrame:
+def create_fatalities_clean(return_df=False):
     """
-    Read all fatalities CSV files (1-9), clean, merge, and produce
-    a single clean DataFrame ready for ETL load into Postgres.
+    Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
+    performs basic cleaning, and loads the resulting table into Postgres.
     
-    Returns:
-        pd.DataFrame: cleaned fatalities data
+    Parameters:
+    - return_df (bool): If True, returns the cleaned DataFrame.
+    
+    Raises:
+    - ValueError: If no matching CSV files are found.
     """
+     
 
-    raw_dir = os.path.join(DATA_DIR, "fatalities")
-    csv_files = sorted(glob.glob(os.path.join(raw_dir, "*.csv")))
-
-    dfs = []
-
-    for f in csv_files:
+    # ==================== Find all CSV files ====================
+    pattern = os.path.join(DATA_DIR, "fatalities_*.csv")
+    files = sorted(glob.glob(pattern))
+    
+    if not files:
         try:
-            # Handle different encodings
-            df = pd.read_csv(f, encoding="utf-8", error_bad_lines=False)
-        except UnicodeDecodeError:
-            df = pd.read_csv(f, encoding="latin1", error_bad_lines=False)
-
-        # Keep only relevant columns if they exist
-        cols_needed = ["date", "location", "incident", "num_fatalities", "num_catastrophes"]
-        df = df[[c for c in cols_needed if c in df.columns]]
-
-        # Drop rows that are headers repeated or entirely empty
-        df = df.dropna(how="all", subset=df.columns)
-
-        dfs.append(df)
-
-    if not dfs:
-        raise ValueError("No fatalities CSV files could be read!")
-
-    # Merge all files into one DataFrame
-    df_clean = pd.concat(dfs, ignore_index=True)
-
-    # Ensure date column is datetime
-    if "date" in df_clean.columns:
-        df_clean["date"] = pd.to_datetime(df_clean["date"], errors="coerce")
-
-    # -----------------------------
-    # Split location into municipality & department
-    # -----------------------------
-    def split_location(df: pd.DataFrame) -> pd.DataFrame:
-        municipalities = []
-        departments = []
-        for loc in df['location'].fillna('').astype(str):
-            parts = [p.strip() for p in loc.split(',') if p.strip()]
-            if len(parts) >= 2:
-                municipalities.append(parts[-2])
-                departments.append(parts[-1])
-            elif len(parts) == 1:
-                municipalities.append(parts[0])
-                departments.append("UNKNOWN")
-            else:
-                municipalities.append("UNKNOWN")
-                departments.append("UNKNOWN")
-        df['municipality'] = municipalities
-        df['department'] = departments
-        return df
-
-    df_clean = split_location(df_clean)
-
-    # Add country column (all USA)
-    df_clean['country'] = 'USA'
-
-    # Optionally: reorder columns for clarity
-    cols_order = [
-        "date", "location", "incident", "num_fatalities", "num_catastrophes",
-        "municipality", "department", "country"
-    ]
-    df_clean = df_clean[[c for c in cols_order if c in df_clean.columns]]
-
-    # -----------------------------
-    # Save CSV for ETL reference
-    # -----------------------------
-    out_file = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    df_clean.to_csv(out_file, index=False)
-    print(f"✔ ETL-ready fatalities_clean.csv saved: {out_file}")
-
-    # -----------------------------
-    # Insert into Postgres
-    # -----------------------------
+            ls_output = subprocess.check_output(["ls", "-l", DATA_DIR], text=True)
+        except Exception as e:
+            ls_output = f"Could not list directory {DATA_DIR}: {e}"
+        
+        raise ValueError(
+            f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!\n"
+            f"Directory contents:\n{ls_output}"
+        )
+    
+    print(f"Found {len(files)} files: {files}")
+    
+    # ==================== Read and concatenate ====================
+    df_list = []
+    for f in files:
+        try:
+            df = pd.read_csv(f, encoding="utf-8")
+            df_list.append(df)
+            print(f"Read file: {f} ({len(df)} rows)")
+        except Exception as e:
+            print(f"Warning: Could not read {f}: {e}")
+    
+    if not df_list:
+        raise ValueError(
+            f"No fatalities CSV files could be read successfully from {DATA_DIR}!\n"
+            f"Checked files: {files}"
+        )
+    
+    df_clean = pd.concat(df_list, ignore_index=True)
+    
+    # ==================== Basic cleaning ====================
+    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
+    for col in df_clean.select_dtypes(include="object").columns:
+        df_clean[col] = df_clean[col].astype(str).str.strip()
+    
+    # ==================== Load into PostgreSQL ====================
     conn = pg_connect()
     cur = conn.cursor()
-
-    # Drop table if exists
+    
+    # Drop old clean table if exists
     cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
-
-    # Create table with serial primary key
-    cur.execute(f"""
-        CREATE TABLE {DB_CONFIG['fatalities_clean_table']} (
-            fatalities_id SERIAL PRIMARY KEY,
-            date DATE,
-            location TEXT,
-            incident TEXT,
-            num_fatalities FLOAT,
-            num_catastrophes FLOAT,
-            municipality TEXT,
-            department TEXT,
-            country TEXT
-        )
-    """)
+    
+    # Create table with inferred schema from pandas (all TEXT)
+    cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
+    create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
+    cur.execute(create_sql)
     conn.commit()
-
+    
     # Insert rows
     for _, row in df_clean.iterrows():
-        cur.execute(
-            f"""INSERT INTO {DB_CONFIG['fatalities_clean_table']}
-            (date, location, incident, num_fatalities, num_catastrophes, municipality, department, country)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                row.get("date"),
-                row.get("location"),
-                row.get("incident"),
-                row.get("num_fatalities"),
-                row.get("num_catastrophes"),
-                row.get("municipality"),
-                row.get("department"),
-                row.get("country"),
-            )
-        )
+        placeholders = ",".join(["%s"] * len(df_clean.columns))
+        insert_sql = f"INSERT INTO {DB_CONFIG['fatalities_clean_table']} VALUES ({placeholders})"
+        cur.execute(insert_sql, list(row))
+    
     conn.commit()
     conn.close()
-    print(f"✔ Fatalities table loaded into Postgres: {DB_CONFIG['fatalities_clean_table']}")
+    
+    print(f"✔ Successfully loaded {len(df_clean)} rows into '{DB_CONFIG['fatalities_clean_table']}'")
+    
+    if return_df:
+        return df_clean
 
-    return df_clean
 
 # =====================================================================================
 # CREATE ARIADB CLEAN
