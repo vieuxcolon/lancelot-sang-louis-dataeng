@@ -12,8 +12,7 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from datetime import datetime
 from etl_utils import (
     download_csv, download_all_fatalities, download_and_extract_zip,
-    DB_CONFIG, CSV_URL, CSV_URLS_FATALITIES, load_to_postgres,
-    append_to_fatalities, drop_fatalities_table
+    DB_CONFIG, CSV_URL, create_fatalities_clean, load_to_postgres
 )
 
 def task_load_ariadb():
@@ -25,14 +24,9 @@ def task_download_fatalities():
     for f in files:
         print(f"Downloaded {f}")
 
-def task_drop_fatalities():
-    drop_fatalities_table()
-    print("Fatalities table dropped.")
-
-def task_load_fatalities(url, idx):
-    csv_text = download_csv(url, f"fatalities_{idx}.csv")
-    append_to_fatalities(csv_text)
-    print(f"fatalities_{idx} loaded.")
+def task_create_fatalities_clean():
+    df_clean = create_fatalities_clean()  # loads table into Postgres internally
+    print("✔ fatalities_clean table created in Postgres.")
 
 def task_load_workaccidents():
     csv_text = download_and_extract_zip()
@@ -46,29 +40,17 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    # Parallel tasks that are safe
+    # Parallel start of safe tasks
     t1_load_ariadb = PythonOperator(task_id="load_ariadb", python_callable=task_load_ariadb)
     t2_download_fatalities = PythonOperator(task_id="download_fatalities", python_callable=task_download_fatalities)
     t4_load_workaccidents = PythonOperator(task_id="load_workaccidents", python_callable=task_load_workaccidents)
 
-    # Sequential fatalities tasks
-    t0_drop_fatalities = PythonOperator(task_id="drop_fatalities", python_callable=task_drop_fatalities)
-    t3_fatalities = [
-        PythonOperator(
-            task_id=f"load_fatalities_{i}",
-            python_callable=lambda u=url, idx=i: task_load_fatalities(u, idx)
-        )
-        for i, url in enumerate(CSV_URLS_FATALITIES, start=1)
-    ]
+    # New single fatalities_clean task
+    t3_fatalities_clean = PythonOperator(task_id="create_fatalities_clean", python_callable=task_create_fatalities_clean)
 
-    # Chain fatalities sequentially
-    t0_drop_fatalities >> t3_fatalities[0]
-    for i in range(len(t3_fatalities)-1):
-        t3_fatalities[i] >> t3_fatalities[i+1]
-
-    # Parallel start of fetch tasks
-    [t1_load_ariadb, t2_download_fatalities] >> t0_drop_fatalities
-    t3_fatalities[-1] >> t4_load_workaccidents  # workaccidents waits for fatalities to finish
+    # Task dependencies
+    [t1_load_ariadb, t2_download_fatalities] >> t3_fatalities_clean
+    t3_fatalities_clean >> t4_load_workaccidents
 
     # Trigger next DAG: dag_data_clean synchronously
     trigger_clean = TriggerDagRunOperator(
