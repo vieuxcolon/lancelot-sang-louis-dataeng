@@ -502,16 +502,15 @@ def parse_address(raw):
 # ==========================================
 
 import glob
-import subprocess
 
 def create_fatalities_clean(return_df=False):
     """
     Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
     performs basic cleaning, and loads the resulting table into Postgres.
-    
+
     Parameters:
     - return_df (bool): If True, returns the cleaned DataFrame.
-    
+
     Raises:
     - ValueError: If no matching CSV files are found or readable.
     """
@@ -521,40 +520,36 @@ def create_fatalities_clean(return_df=False):
     files = sorted(glob.glob(pattern))
     
     if not files:
-        raise ValueError(f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!")
-
+        raise ValueError(
+            f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!"
+        )
+    
     print(f"Found {len(files)} files: {files}")
     
     # ==================== Read and concatenate ====================
     df_list = []
     for f in files:
         try:
-            # Use 'latin1' to avoid UTF-8 decoding errors
+            # Use latin1 encoding to avoid UTF-8 errors
             df = pd.read_csv(f, encoding="latin1")
             df_list.append(df)
             print(f"Read file: {f} ({len(df)} rows)")
         except Exception as e:
             print(f"Warning: Could not read {f}: {e}")
-
+    
     if not df_list:
-        # Optional: show ls -l output for debugging
-        try:
-            ls_output = os.popen(f"ls -l {pattern}").read()
-        except Exception:
-            ls_output = "Cannot list files."
-        raise ValueError(
-            f"No fatalities CSV files could be read successfully from {DATA_DIR}!\n"
-            f"Checked files: {files}\n"
-            f"ls -l output:\n{ls_output}"
-        )
-
+        raise ValueError("No fatalities CSV files could be read successfully!")
+    
     df_clean = pd.concat(df_list, ignore_index=True)
     
     # ==================== Basic cleaning ====================
-    # Strip whitespace, lowercase, replace spaces with underscores
-    df_clean.columns = [c.strip().lower().replace(" ", "_") for c in df_clean.columns]
+    # Standardize column names
+    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
+
+    # Strip whitespace from string columns
     for col in df_clean.select_dtypes(include="object").columns:
-        df_clean[col] = df_clean[col].astype(str).str.strip()
+        if hasattr(df_clean[col], "str"):
+            df_clean[col] = df_clean[col].str.strip()
     
     # ==================== Load into PostgreSQL ====================
     conn = pg_connect()
@@ -564,7 +559,7 @@ def create_fatalities_clean(return_df=False):
     cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
     
-    # Create table with simple TEXT columns
+    # Create table with TEXT columns
     cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
     create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
     cur.execute(create_sql)
