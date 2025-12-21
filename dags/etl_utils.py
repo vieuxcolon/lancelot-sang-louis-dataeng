@@ -506,7 +506,8 @@ import glob
 def create_fatalities_clean(return_df=False):
     """
     Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
-    performs basic cleaning, and loads the resulting table into Postgres.
+    performs basic cleaning, keeps only selected columns, and loads 
+    the resulting table into Postgres.
 
     Parameters:
     - return_df (bool): If True, returns the cleaned DataFrame.
@@ -520,9 +521,7 @@ def create_fatalities_clean(return_df=False):
     files = sorted(glob.glob(pattern))
     
     if not files:
-        raise ValueError(
-            f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!"
-        )
+        raise ValueError(f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!")
     
     print(f"Found {len(files)} files: {files}")
     
@@ -530,7 +529,6 @@ def create_fatalities_clean(return_df=False):
     df_list = []
     for f in files:
         try:
-            # Use latin1 encoding to avoid UTF-8 errors
             df = pd.read_csv(f, encoding="latin1")
             df_list.append(df)
             print(f"Read file: {f} ({len(df)} rows)")
@@ -538,18 +536,42 @@ def create_fatalities_clean(return_df=False):
             print(f"Warning: Could not read {f}: {e}")
     
     if not df_list:
-        raise ValueError("No fatalities CSV files could be read successfully!")
+        raise ValueError(f"No fatalities CSV files could be read successfully from {DATA_DIR}!")
     
-    df_clean = pd.concat(df_list, ignore_index=True)
-    
-    # ==================== Basic cleaning ====================
-    # Standardize column names
-    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
+    df_all = pd.concat(df_list, ignore_index=True)
 
-    # Strip whitespace from string columns
+    # ==================== Keep only relevant columns ====================
+    # Map existing columns to final columns
+    df_all.columns = [c.strip().lower() for c in df_all.columns]
+    
+    # Define final columns
+    final_columns = {
+        "date": ["date", "date_of_incident", "dateofincident"],  # try to match possible variants
+        "no_of_fatalities": ["no_of_fatalities", "fatalities", "number_of_fatalities"],
+        "state": ["state", "region", "province"]
+    }
+    
+    df_clean = pd.DataFrame()
+    
+    # Map and keep only existing columns
+    for final_col, variants in final_columns.items():
+        for v in variants:
+            if v in df_all.columns:
+                df_clean[final_col] = df_all[v]
+                break
+        else:
+            df_clean[final_col] = None  # If no variant found, fill with None
+    
+    # Add country = USA
+    df_clean["country"] = "USA"
+    
+    # ==================== Clean data ====================
+    # Strip string columns
     for col in df_clean.select_dtypes(include="object").columns:
-        if hasattr(df_clean[col], "str"):
-            df_clean[col] = df_clean[col].str.strip()
+        df_clean[col] = df_clean[col].astype(str).str.strip()
+    
+    # Fill missing numeric columns with 0 or leave as None
+    df_clean["no_of_fatalities"] = pd.to_numeric(df_clean["no_of_fatalities"], errors="coerce")
     
     # ==================== Load into PostgreSQL ====================
     conn = pg_connect()
@@ -559,17 +581,31 @@ def create_fatalities_clean(return_df=False):
     cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
     
-    # Create table with TEXT columns
-    cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
-    create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
+    # Create table with fatality_id as serial PK
+    cols_defs = [
+        "fatality_id SERIAL PRIMARY KEY",
+        "date_of_incident DATE",
+        "no_of_fatalities INTEGER",
+        "state TEXT",
+        "country TEXT"
+    ]
+    create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({', '.join(cols_defs)});"
     cur.execute(create_sql)
     conn.commit()
     
     # Insert rows
+    insert_sql = f"""
+    INSERT INTO {DB_CONFIG['fatalities_clean_table']} 
+    (date_of_incident, no_of_fatalities, state, country)
+    VALUES (%s, %s, %s, %s)
+    """
     for _, row in df_clean.iterrows():
-        placeholders = ",".join(["%s"] * len(df_clean.columns))
-        insert_sql = f"INSERT INTO {DB_CONFIG['fatalities_clean_table']} VALUES ({placeholders})"
-        cur.execute(insert_sql, list(row))
+        cur.execute(insert_sql, [
+            row["date"],
+            row["no_of_fatalities"],
+            row["state"],
+            row["country"]
+        ])
     
     conn.commit()
     conn.close()
