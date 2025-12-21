@@ -506,16 +506,13 @@ import glob
 def create_fatalities_clean(return_df=False):
     """
     Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
-    performs basic cleaning, keeps only selected columns, and loads 
-    the resulting table into Postgres.
+    performs basic cleaning, keeps only selected columns, writes a merged
+    CSV ('fatalities_clean.csv') and loads the resulting table into Postgres.
 
     Parameters:
     - return_df (bool): If True, returns the cleaned DataFrame.
-
-    Raises:
-    - ValueError: If no matching CSV files are found or readable.
     """
-    
+
     # ==================== Find all CSV files ====================
     pattern = os.path.join(DATA_DIR, "fatalities_*.csv")
     files = sorted(glob.glob(pattern))
@@ -546,7 +543,7 @@ def create_fatalities_clean(return_df=False):
     
     # Define final columns
     final_columns = {
-        "date": ["date", "date_of_incident", "dateofincident"],  # try to match possible variants
+        "date": ["date", "date_of_incident", "dateofincident"],  
         "no_of_fatalities": ["no_of_fatalities", "fatalities", "number_of_fatalities"],
         "state": ["state", "region", "province"]
     }
@@ -560,7 +557,7 @@ def create_fatalities_clean(return_df=False):
                 df_clean[final_col] = df_all[v]
                 break
         else:
-            df_clean[final_col] = None  # If no variant found, fill with None
+            df_clean[final_col] = None
     
     # Add country = USA
     df_clean["country"] = "USA"
@@ -570,14 +567,19 @@ def create_fatalities_clean(return_df=False):
     for col in df_clean.select_dtypes(include="object").columns:
         df_clean[col] = df_clean[col].astype(str).str.strip()
     
-    # Fill missing numeric columns with 0 or leave as None
+    # Convert numeric columns
     df_clean["no_of_fatalities"] = pd.to_numeric(df_clean["no_of_fatalities"], errors="coerce")
     
+    # ==================== Write merged CSV ====================
+    merged_csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    df_clean.to_csv(merged_csv_path, index=False)
+    print(f"✔ Merged clean CSV written: {merged_csv_path} ({len(df_clean)} rows, {len(df_clean.columns)} columns)")
+
     # ==================== Load into PostgreSQL ====================
     conn = pg_connect()
     cur = conn.cursor()
     
-    # Drop old clean table if exists
+    # Drop old table if exists
     cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
     
@@ -593,7 +595,7 @@ def create_fatalities_clean(return_df=False):
     cur.execute(create_sql)
     conn.commit()
     
-    # Insert rows
+    # Insert rows from df_clean
     insert_sql = f"""
     INSERT INTO {DB_CONFIG['fatalities_clean_table']} 
     (date_of_incident, no_of_fatalities, state, country)
