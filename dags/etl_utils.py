@@ -634,28 +634,12 @@ def create_dimensions_and_fact():
     conn = pg_connect()
     cur = conn.cursor()
 
-    # -------------------------
-    # Helpers
-    # -------------------------
+    # ==================================================
+    # HELPERS
+    # ==================================================
     def normalize_text(s):
         return s.astype(str).str.strip().str.upper()
 
-    def normalize_loc_text(s):
-        return s.astype(str).str.strip().str.upper()
-
-    def safe_loc(df, mapping, country_map):
-        df_loc = pd.DataFrame({k: df[v] if v in df.columns else None for k, v in mapping.items()})
-        for col in ["municipality", "department", "country"]:
-            if col in df_loc.columns:
-                df_loc[col] = normalize_loc_text(df_loc[col])
-        if "country" in df_loc.columns:
-            df_loc["country"] = df_loc["country"].map(lambda x: country_map.get(x, x))
-        return df_loc
-
-    def extract_employer(df):
-        return df[["employer"]] if "employer" in df.columns else pd.DataFrame(columns=["employer"])
-
-    
     # ==================================================
     # DROP TABLES (DEPENDENCY ORDER)
     # ==================================================
@@ -678,33 +662,32 @@ def create_dimensions_and_fact():
     df_work  = pd.read_sql("SELECT * FROM workaccidents_clean", conn)
 
     # ==================================================
-    # ORIGINAL_DIM_LOCATION (RAW STAGING)
+    # ORIGINAL_DIM_LOCATION (RAW STAGING — NO IDS)
     # ==================================================
-    df_loc = pd.concat([
-        df_aria[["municipality","department","country"]],
-        df_fatal[["city","state","country"]].rename(
-            columns={"city":"municipality","state":"department"}
+    df_orig_loc = pd.concat([
+        df_aria[["municipality", "department", "country"]],
+        df_fatal[["city", "state", "country"]].rename(
+            columns={"city": "municipality", "state": "department"}
         ),
-        df_work[["city","state","country"]].rename(
-            columns={"city":"municipality","state":"department"}
+        df_work[["city", "state", "country"]].rename(
+            columns={"city": "municipality", "state": "department"}
         ),
-    ], ignore_index=True).drop_duplicates().reset_index(drop=True)
+    ], ignore_index=True)
 
-    df_loc.insert(0, "location_id", range(1, len(df_loc) + 1))
+    df_orig_loc = df_orig_loc.dropna(how="all").drop_duplicates()
 
     cur.execute("""
         CREATE TABLE original_dim_location (
-            location_id INT PRIMARY KEY,
             municipality TEXT,
             department TEXT,
             country TEXT
         );
     """)
 
-    for _, r in df_loc.iterrows():
+    for _, r in df_orig_loc.iterrows():
         cur.execute(
-            "INSERT INTO original_dim_location VALUES (%s,%s,%s,%s)",
-            list(r)
+            "INSERT INTO original_dim_location VALUES (%s,%s,%s)",
+            [r.municipality, r.department, r.country]
         )
     conn.commit()
 
@@ -718,9 +701,9 @@ def create_dimensions_and_fact():
             country_code TEXT
         );
     """)
-    conn.commit()
 
-    cur.execute("""INSERT INTO dim_country VALUES
+    cur.execute("""
+        INSERT INTO dim_country VALUES
         (1,'United States','US'),
         (2,'United Kingdom','GB'),
         (3,'France','FR'),
@@ -739,11 +722,12 @@ def create_dimensions_and_fact():
         (16,'Australia','AU'),
         (17,'South Africa','ZA'),
         (18,'Mexico','MX'),
-        (19,'UNKNOWN','XX')
+        (19,'UNKNOWN','XX');
     """)
+    conn.commit()
 
     # ==================================================
-    # COUNTRY SYNONYMS
+    # COUNTRY SYNONYMS (NORMALIZATION LAYER)
     # ==================================================
     cur.execute("""
         CREATE TABLE country_synonym (
@@ -753,27 +737,24 @@ def create_dimensions_and_fact():
     """)
 
     cur.execute("""
-        INSERT INTO country_synonym
-        SELECT UPPER(s), c.country_id
-        FROM (
-            VALUES
-            ('USA',1),('US',1),('ETATS-UNIS',1),('UNITED STATES',1),
-            ('UK',2),('ROYAUME-UNI',2),('UNITED KINGDOM',2),
-            ('ALLEMAGNE',5),('GERMANY',5),
-            ('ITALIE',6),('ITALY',6),
-            ('ESPAGNE',7),('SPAIN',7),
-            ('SUISSE',8),
-            ('PAYS-BAS',9),
-            ('BELGIQUE',10),
-            ('CHINE',11),
-            ('RUSSIE',12)
-        ) AS t(s,c)
-        JOIN dim_country c ON c.country_id = t.c;
+        INSERT INTO country_synonym VALUES
+        ('USA',1),('US',1),('UNITED STATES',1),('ETATS-UNIS',1),
+        ('UK',2),('UNITED KINGDOM',2),('ROYAUME-UNI',2),
+        ('FRANCE',3),
+        ('CANADA',4),
+        ('GERMANY',5),('ALLEMAGNE',5),
+        ('ITALY',6),('ITALIE',6),
+        ('SPAIN',7),('ESPAGNE',7),
+        ('SWITZERLAND',8),('SUISSE',8),
+        ('NETHERLANDS',9),('PAYS-BAS',9),
+        ('BELGIUM',10),('BELGIQUE',10),
+        ('CHINA',11),('CHINE',11),
+        ('RUSSIA',12),('RUSSIE',12);
     """)
     conn.commit()
 
     # ==================================================
-    # DIM LOCATION (CANONICAL)
+    # DIM LOCATION (CANONICAL, DEDUPLICATED)
     # ==================================================
     cur.execute("""
         CREATE TABLE dim_location (
@@ -783,43 +764,25 @@ def create_dimensions_and_fact():
             country_id INT REFERENCES dim_country(country_id)
         );
     """)
+
+    cur.execute("""
+        INSERT INTO dim_location (location_id, municipality, department, country_id)
+        SELECT
+            ROW_NUMBER() OVER (ORDER BY municipality, department, country_id) AS location_id,
+            municipality,
+            department,
+            country_id
+        FROM (
+            SELECT DISTINCT
+                UPPER(TRIM(o.municipality)) AS municipality,
+                UPPER(TRIM(o.department)) AS department,
+                COALESCE(cs.country_id, 19) AS country_id
+            FROM original_dim_location o
+            LEFT JOIN country_synonym cs
+                ON UPPER(TRIM(o.country)) = cs.synonym
+        ) t;
+    """)
     conn.commit()
-
-    def load_dim_location(conn):
-        """
-        Populate dim_location from original_dim_location
-        using country_synonym → dim_country mapping.
-        Fully deterministic, no CASE statements.
-        """
-
-    sql = """
-    INSERT INTO dim_location (
-        location_id,
-        municipality,
-        department,
-        country_id
-    )
-    SELECT
-        o.location_id,
-        UPPER(TRIM(o.municipality)) AS municipality,
-        UPPER(TRIM(o.department)) AS department,
-        COALESCE(cs.country_id, 19) AS country_id
-    FROM original_dim_location o
-    LEFT JOIN country_synonym cs
-        ON UPPER(TRIM(o.country)) = cs.synonym
-    ON CONFLICT (location_id) DO NOTHING;
-    """
-
-    cur = conn.cursor()
-    cur.execute(sql)
-    conn.commit()
-
-
-    # ==================================================
-    # CONTINUE WITH EXISTING DIMENSIONS + FACT
-    # ==================================================
-    # dim_date, dim_employer, dim_hazard, dim_accident_type
-    # fact_accidents (unchanged logic)
 
     # ==================================================
     # DIM DATE
@@ -828,7 +791,7 @@ def create_dimensions_and_fact():
         pd.to_datetime(df_aria.get("incident_date"), errors="coerce"),
         pd.to_datetime(df_fatal.get("date_of_incident"), errors="coerce"),
         pd.to_datetime(df_work.get("accident_date"), errors="coerce"),
-    ]).dropna().drop_duplicates().sort_values().reset_index(drop=True)
+    ]).dropna().drop_duplicates().sort_values()
 
     df_dates = pd.DataFrame({"date": all_dates})
     df_dates["year"] = df_dates["date"].dt.year
@@ -858,10 +821,10 @@ def create_dimensions_and_fact():
     # DIM EMPLOYER
     # ==================================================
     df_emp = pd.concat([
-        extract_employer(df_aria),
-        extract_employer(df_fatal),
-        extract_employer(df_work),
-    ], ignore_index=True).dropna().drop_duplicates().reset_index(drop=True)
+        df_aria[["employer"]] if "employer" in df_aria.columns else pd.DataFrame(),
+        df_fatal[["employer"]] if "employer" in df_fatal.columns else pd.DataFrame(),
+        df_work[["employer"]] if "employer" in df_work.columns else pd.DataFrame(),
+    ]).dropna().drop_duplicates()
 
     df_emp["employer"] = normalize_text(df_emp["employer"])
     df_emp.insert(0, "employer_id", range(1, len(df_emp) + 1))
@@ -888,7 +851,7 @@ def create_dimensions_and_fact():
     if "nature" in df_work.columns:
         hazard_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
 
-    df_haz = pd.concat(hazard_frames, ignore_index=True).dropna().drop_duplicates().reset_index(drop=True)
+    df_haz = pd.concat(hazard_frames).dropna().drop_duplicates()
     df_haz.insert(0, "hazard_id", range(1, len(df_haz) + 1))
 
     cur.execute("""
@@ -911,7 +874,7 @@ def create_dimensions_and_fact():
     if "naturetitle" in df_work.columns:
         acc_frames.append(df_work[["naturetitle"]].rename(columns={"naturetitle":"accident_type"}))
 
-    df_act = pd.concat(acc_frames, ignore_index=True).dropna().drop_duplicates().reset_index(drop=True)
+    df_act = pd.concat(acc_frames).dropna().drop_duplicates()
     df_act["accident_type"] = normalize_text(df_act["accident_type"])
     df_act.insert(0, "accident_type_id", range(1, len(df_act) + 1))
 
@@ -939,48 +902,54 @@ def create_dimensions_and_fact():
         );
     """)
 
-    # -------------------------
-    # SAFE FACT BUILDER
-    # -------------------------
+    # ==================================================
+    # BUILD FACT (NEW, CORRECT)
+    # ==================================================
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
+
         df2 = df.copy()
 
-        if date_col in df2.columns:
-            df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
-            df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
+        df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
+        df2 = df2.merge(df_dates[["date", "date_id"]],
+                        left_on=date_col, right_on="date", how="left")
 
-        for col in ["municipality","department","country"]:
+        for col in ["municipality", "department", "country"]:
             if col not in df2.columns:
                 df2[col] = None
 
+        df2["municipality"] = normalize_text(df2["municipality"])
+        df2["department"] = normalize_text(df2["department"])
+        df2["country"] = normalize_text(df2["country"])
+
+        loc_df = pd.read_sql("""
+            SELECT l.location_id, l.municipality, l.department, cs.synonym
+            FROM dim_location l
+            JOIN country_synonym cs ON l.country_id = cs.country_id
+        """, conn)
+
         df2 = df2.merge(
-            df_loc[["municipality","department","country","location_id"]],
-            on=["municipality","department","country"],
+            loc_df,
+            left_on=["municipality", "department", "country"],
+            right_on=["municipality", "department", "synonym"],
             how="left"
         )
 
-        if employer_col and employer_col in df2.columns:
+        if employer_col in df2.columns:
             df2[employer_col] = normalize_text(df2[employer_col])
             df2 = df2.merge(df_emp, left_on=employer_col, right_on="employer", how="left")
 
-        if hazard_col and hazard_col in df2.columns:
+        if hazard_col in df2.columns:
             df2 = df2.merge(df_haz, left_on=hazard_col, right_on="hazard", how="left")
 
-        if acc_type_col and acc_type_col in df2.columns:
+        if acc_type_col in df2.columns:
             df2[acc_type_col] = normalize_text(df2[acc_type_col])
             df2 = df2.merge(df_act, left_on=acc_type_col, right_on="accident_type", how="left")
 
-        for col in ["date_id","employer_id","location_id","hazard_id","accident_type_id"]:
-            if col in df2.columns:
-                df2[col] = df2[col].fillna(0).astype(int)
-            else:
-                df2[col] = 0
+        for c in ["date_id", "employer_id", "location_id", "hazard_id", "accident_type_id"]:
+            df2[c] = df2[c].fillna(0).astype(int)
 
         return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id"]]
 
-    # -------------------------
-    # BUILD & INSERT FACTS
-    # -------------------------
     df_fact = pd.concat([
         build_fact(df_aria, "incident_date", "employer", "hazard_class", None),
         build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
@@ -990,45 +959,19 @@ def create_dimensions_and_fact():
     for _, r in df_fact.iterrows():
         cur.execute("INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s)", list(r))
 
-    
+    conn.commit()
     conn.close()
-    print("✔ Fully explicit star schema created (no placeholders)")
+
+    print("✔ Fully clean star schema created (correct order, no duplicates, deterministic)")
 
 # =====================================================================================
 # STAR SCHEMA TESTS
 # =====================================================================================
 
-def table_exists(conn, table_name):
-    """
-    Check if a table exists in the database.
-    """
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT EXISTS (
-            SELECT 1 
-            FROM information_schema.tables 
-            WHERE table_name=%s
-        );
-    """, (table_name,))
-    return cur.fetchone()[0]
-
 def min_test_star_schema():
-    """
-    Minimal test of star schema:
-    Shows a few rows of IDs from date, employer, and location dimensions.
-    Safe: skips query if tables don't exist.
-    """
     conn = pg_connect()
 
-    # Check necessary tables
-    required_tables = ["dim_date", "dim_employer", "dim_location"]
-    missing = [t for t in required_tables if not table_exists(conn, t)]
-    if missing:
-        print(f"⚠ Skipping min_test_star_schema: missing tables {missing}")
-        conn.close()
-        return None
 
-    # Run minimal query
     query = """
         SELECT d.date_id, e.employer_id, l.location_id
         FROM dim_date d
@@ -1036,57 +979,36 @@ def min_test_star_schema():
         JOIN dim_location l ON l.location_id IS NOT NULL
         LIMIT 5;
     """
+
     df_test = pd.read_sql(query, conn)
     conn.close()
 
     print("✔ min_test_star_schema result:")
     print(df_test)
-    return df_test
 
-def full_test_star_schema(limit=20):
-    """
-    Full star schema test:
-    Joins all dimensions and shows a few fact rows.
-    Handles the new dim_country/dim_location setup.
-    """
+
+def full_test_star_schema():
     conn = pg_connect()
 
-    # Check tables
-    required_tables = [
-        "fact_accidents",
-        "dim_date",
-        "dim_employer",
-        "dim_location",
-        "dim_hazard",
-        "dim_accident_type",
-        "dim_country"
-    ]
-    missing = [t for t in required_tables if not table_exists(conn, t)]
-    if missing:
-        print(f"⚠ Skipping full_test_star_schema: missing tables {missing}")
-        conn.close()
-        return None
-
-    # Full join query
-    sql = f"""
+    sql = """
         SELECT 
             f.date_id, d.date, d.year, d.month,
             f.employer_id, e.employer,
-            f.location_id, l.city, l.region, c.country_name,
+            f.location_id, l.municipality, l.department, l.country,
             f.hazard_id, h.hazard,
             f.accident_type_id, a.accident_type
         FROM fact_accidents f
         LEFT JOIN dim_date d ON f.date_id = d.date_id
         LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
         LEFT JOIN dim_location l ON f.location_id = l.location_id
-        LEFT JOIN dim_country c ON l.country_id = c.country_id
         LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
         LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-        LIMIT {limit};
+        LIMIT 20;
     """
+
     df = pd.read_sql(sql, conn)
     conn.close()
 
-    print(f"\n=== Full Star Schema Test ({limit} rows) ===")
+    print("\n=== Full Star Schema Test (20 rows) ===")
     print(df)
     return df
