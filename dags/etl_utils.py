@@ -262,140 +262,81 @@ def load_to_postgres(csv_content, table_name, skiprows=0, sep=";"):
 
 
 # =====================================================================================
-# FATALITIES: APPEND + SCHEMA MERGE
+# create_fatalities_clean.py
 # =====================================================================================
 
-# ==================== etl_utils.py ====================
-import os
-import pandas as pd
-import re
-from etl_utils import DATA_DIR  # already available in your project
 
-
-# =====================================================================================
-# CREATE FATALITIES CLEAN (PRODUCTION)
-# =====================================================================================
-
-def create_fatalities_clean():
+def create_fatalities_clean(return_df=False):
     """
-    Build a clean fatalities_clean.csv from 9 raw fatalities files.
-
-    Output columns (exact order):
-        date
-        location
-        incident
-        num_fatalities
-        num_catastrophes
-        country
-
-    No DB writes here. Postgres loading handled elsewhere.
+    Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
+    performs basic cleaning, and loads the resulting table into Postgres.
+    
+    Parameters:
+    - return_df (bool): If True, returns the cleaned DataFrame.
+    
+    Raises:
+    - ValueError: If no matching CSV files are found.
     """
+    
+    # ==================== Find all CSV files ====================
+    pattern = os.path.join(DATA_DIR, "fatalities_*.csv")
+    files = sorted(glob.glob(pattern))
+    
+    if not files:
+        raise ValueError(f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!")
+    
+    print(f"Found {len(files)} files: {files}")
+    
+    # ==================== Read and concatenate ====================
+    df_list = []
+    for f in files:
+        try:
+            df = pd.read_csv(f, encoding="utf-8")
+            df_list.append(df)
+            print(f"Read file: {f} ({len(df)} rows)")
+        except Exception as e:
+            print(f"Warning: Could not read {f}: {e}")
+    
+    if not df_list:
+        raise ValueError("No fatalities CSV files could be read successfully!")
+    
+    df_clean = pd.concat(df_list, ignore_index=True)
+    
+    # ==================== Basic cleaning ====================
+    # Example: strip strings and standardize column names
+    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
+    for col in df_clean.select_dtypes(include="object").columns:
+        df_clean[col] = df_clean[col].astype(str).str.strip()
+    
+    # ==================== Load into PostgreSQL ====================
+    conn = pg_connect()
+    cur = conn.cursor()
+    
+    # Drop old clean table if exists
+    cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
+    conn.commit()
+    
+    # Create table with inferred schema from pandas
+    # We'll use simple TEXT columns for all
+    cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
+    create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
+    cur.execute(create_sql)
+    conn.commit()
+    
+    # Insert rows
+    for _, row in df_clean.iterrows():
+        placeholders = ",".join(["%s"] * len(df_clean.columns))
+        insert_sql = f"INSERT INTO {DB_CONFIG['fatalities_clean_table']} VALUES ({placeholders})"
+        cur.execute(insert_sql, list(row))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"✔ Successfully loaded {len(df_clean)} rows into '{DB_CONFIG['fatalities_clean_table']}'")
+    
+    if return_df:
+        return df_clean
 
-    raw_dir = DATA_DIR
-    output_file = os.path.join(DATA_DIR, "fatalities_clean.csv")
-
-    # ------------------------------------------------------------------
-    # Helper: safe CSV reader with encoding fallback
-    # ------------------------------------------------------------------
-    def read_csv_safe(path):
-        for enc in ("utf-8", "latin1", "cp1252"):
-            try:
-                return pd.read_csv(path, encoding=enc)
-            except UnicodeDecodeError:
-                continue
-        raise UnicodeDecodeError(f"Could not read file with known encodings: {path}")
-
-    # ------------------------------------------------------------------
-    # Load all raw fatalities files
-    # ------------------------------------------------------------------
-    frames = []
-    for fname in sorted(os.listdir(raw_dir)):
-        if not fname.lower().startswith("fatalities_") or not fname.lower().endswith(".csv"):
-            continue
-
-        fpath = os.path.join(raw_dir, fname)
-        df = read_csv_safe(fpath)
-        frames.append(df)
-
-    if not frames:
-        raise RuntimeError("No fatalities_*.csv files found")
-
-    df = pd.concat(frames, ignore_index=True)
-
-    # ------------------------------------------------------------------
-    # Standardize expected columns
-    # ------------------------------------------------------------------
-    expected_cols = ["date", "location", "incident"]
-    df.columns = [c.strip().lower() for c in df.columns]
-
-    # Drop unexpected header rows accidentally embedded as data
-    for col in expected_cols:
-        if col in df.columns:
-            df = df[df[col].astype(str).str.lower() != col]
-
-    # Keep only required columns
-    df = df[[c for c in expected_cols if c in df.columns]].copy()
-
-    # ------------------------------------------------------------------
-    # Drop meaningless rows
-    # ------------------------------------------------------------------
-    # Incident is mandatory
-    df = df[df["incident"].notna()]
-
-    # Keep rows where at least one of date or location exists
-    df = df[df["date"].notna() | df["location"].notna()]
-
-    # ------------------------------------------------------------------
-    # Parse and normalize date
-    # ------------------------------------------------------------------
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    # ------------------------------------------------------------------
-    # Normalize incident → fatality / catastrophe flags
-    # ------------------------------------------------------------------
-    def classify_incident(value):
-        v = str(value).lower()
-        return pd.Series({
-            "num_fatalities": 1 if "fatality" in v else 0,
-            "num_catastrophes": 1 if "catastrophe" in v else 0
-        })
-
-    df[["num_fatalities", "num_catastrophes"]] = df["incident"].apply(classify_incident)
-
-    # ------------------------------------------------------------------
-    # Country handling (all fatalities = USA)
-    # ------------------------------------------------------------------
-    df["country"] = "USA"
-
-    # ------------------------------------------------------------------
-    # Deduplication
-    # ------------------------------------------------------------------
-    df = df.drop_duplicates(
-        subset=["date", "location", "incident"]
-    ).reset_index(drop=True)
-
-    # ------------------------------------------------------------------
-    # Final column order (DO NOT CHANGE)
-    # ------------------------------------------------------------------
-    df = df[
-        [
-            "date",
-            "location",
-            "incident",
-            "num_fatalities",
-            "num_catastrophes",
-            "country",
-        ]
-    ]
-
-    # ------------------------------------------------------------------
-    # Save output
-    # ------------------------------------------------------------------
-    df.to_csv(output_file, index=False)
-
-    print(f"✔ fatalities_clean.csv created ({len(df)} rows) at {output_file}")
-
-    return df
 
 
 def load_fatalities_first(csv_text, sep=","):
