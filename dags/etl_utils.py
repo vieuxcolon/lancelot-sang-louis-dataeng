@@ -644,14 +644,14 @@ def create_dimensions_and_fact():
         """
         Normalize text safely for both Series and DataFrame inputs.
         """
-    if isinstance(obj, pd.Series):
-        return obj.astype(str).str.strip().str.upper()
-    elif isinstance(obj, pd.DataFrame):
-        return obj.apply(
-            lambda col: col.astype(str).str.strip().str.upper()
-        )
-    else:
-        return obj
+        if isinstance(obj, pd.Series):
+            return obj.astype(str).str.strip().str.upper()
+        elif isinstance(obj, pd.DataFrame):
+            return obj.apply(
+                lambda col: col.astype(str).str.strip().str.upper()
+            )
+        else:
+            return obj
 
     def drop_empty_rows(df, key_columns):
         """Drop rows where all key columns are null"""
