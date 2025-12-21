@@ -500,27 +500,9 @@ def parse_address(raw):
 # ==========================================
 # etl_utils.py (excerpt) – fatalities
 # ==========================================
-import os
-import glob
-import pandas as pd
-import psycopg2
-from etl_utils import DATA_DIR, DB_CONFIG  # DB_CONFIG contains postgres credentials
-import subprocess  # for ls -l debugging
 
-def pg_connect():
-    """Connect to PostgreSQL using DB_CONFIG."""
-    return psycopg2.connect(
-        host=DB_CONFIG["host"],
-        port=DB_CONFIG["port"],
-        dbname=DB_CONFIG["dbname"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"]
-    )
-
-import os
 import glob
-import pandas as pd
-from etl_utils import DATA_DIR, DB_CONFIG, pg_connect
+import subprocess
 
 def create_fatalities_clean(return_df=False):
     """
@@ -602,6 +584,65 @@ def create_fatalities_clean(return_df=False):
     if return_df:
         return df_clean
 
+
+# =====================================================================================
+# CREATE ARIADB CLEAN
+# =====================================================================================
+
+def create_ariadb_clean():
+    src_table = DB_CONFIG["ariadb_table"]
+    dst_table = DB_CONFIG["ariadb_clean_table"]
+
+    conn = pg_connect()
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    col_map = {
+        "numéro_aria": "aria_id",
+        "titre": "title",
+        "type_de_publication": "publication_type",
+        "date": "incident_date",
+        "code_naf": "industry_code",
+        "pays": "country",
+        "départment": "department",
+        "commune": "municipality",
+        "type_d'accident": "accident_type",
+        "type_évènement": "event_type",
+        "classe_de_danger_clp": "hazard_class",
+    }
+
+    existing = [c for c in col_map if c in df.columns]
+    df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
+
+    if "incident_date" in df.columns:
+        df["incident_date"] = pd.to_datetime(
+            df["incident_date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+    if "aria_id" in df.columns:
+        df.drop_duplicates(subset=["aria_id"], inplace=True)
+
+    cursor = conn.cursor()
+    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
+
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}"
+        ({", ".join([f'"{c}"' for c in df.columns])})
+        VALUES ({", ".join(["%s"] * len(df.columns))})
+    """
+
+    for _, row in df.iterrows():
+        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created ariadb_clean ({len(df)} rows)")
 
 # =====================================================================================
 # CREATE WORKACCIDENTS CLEAN
