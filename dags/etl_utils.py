@@ -930,9 +930,9 @@ def create_dimensions_and_fact():
             if col not in df2.columns:
                 df2[col] = None
 
-        df2["municipality"] = normalize_loc_text(df2["municipality"])
-        df2["department"] = normalize_loc_text(df2["department"])
-        df2["country"] = normalize_loc_text(df2["country"])
+        df2["municipality"] = normalize_text(df2["municipality"])
+        df2["department"] = normalize_text(df2["department"])
+        df2["country"] = normalize_text(df2["country"])
 
         df2 = df2.merge(
             df_loc[["municipality", "department", "country", "location_id"]],
