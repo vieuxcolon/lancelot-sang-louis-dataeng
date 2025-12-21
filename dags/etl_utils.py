@@ -905,51 +905,98 @@ def create_dimensions_and_fact():
     # ==================================================
     # BUILD FACT (NEW, CORRECT)
     # ==================================================
-    def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
 
+    def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
         df2 = df.copy()
 
-        df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
-        df2 = df2.merge(df_dates[["date", "date_id"]],
-                        left_on=date_col, right_on="date", how="left")
+        # -------------------------
+        # DATE
+        # -------------------------
+        if date_col and date_col in df2.columns:
+            df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
+            df2 = df2.merge(
+                df_dates[["date", "date_id"]],
+                left_on=date_col,
+                right_on="date",
+                how="left"
+            )
+        else:
+            df2["date_id"] = 0
 
+        # -------------------------
+        # LOCATION (always exists)
+        # -------------------------
         for col in ["municipality", "department", "country"]:
             if col not in df2.columns:
                 df2[col] = None
 
-        df2["municipality"] = normalize_text(df2["municipality"])
-        df2["department"] = normalize_text(df2["department"])
-        df2["country"] = normalize_text(df2["country"])
-
-        loc_df = pd.read_sql("""
-            SELECT l.location_id, l.municipality, l.department, cs.synonym
-            FROM dim_location l
-            JOIN country_synonym cs ON l.country_id = cs.country_id
-        """, conn)
+        df2["municipality"] = normalize_loc_text(df2["municipality"])
+        df2["department"] = normalize_loc_text(df2["department"])
+        df2["country"] = normalize_loc_text(df2["country"])
 
         df2 = df2.merge(
-            loc_df,
-            left_on=["municipality", "department", "country"],
-            right_on=["municipality", "department", "synonym"],
+            df_loc[["municipality", "department", "country", "location_id"]],
+            on=["municipality", "department", "country"],
             how="left"
         )
 
-        if employer_col in df2.columns:
+        # -------------------------
+        # EMPLOYER (SAFE)
+        # -------------------------
+        if employer_col and employer_col in df2.columns:
             df2[employer_col] = normalize_text(df2[employer_col])
-            df2 = df2.merge(df_emp, left_on=employer_col, right_on="employer", how="left")
+            df2 = df2.merge(
+                df_emp[["employer", "employer_id"]],
+                left_on=employer_col,
+                right_on="employer",
+                how="left"
+            )
+        else:
+            df2["employer_id"] = 0
 
-        if hazard_col in df2.columns:
-            df2 = df2.merge(df_haz, left_on=hazard_col, right_on="hazard", how="left")
+        # -------------------------
+        # HAZARD
+        # -------------------------
+        if hazard_col and hazard_col in df2.columns:
+            df2 = df2.merge(
+                df_haz[["hazard", "hazard_id"]],
+                left_on=hazard_col,
+                right_on="hazard",
+                how="left"
+            )
+        else:
+            df2["hazard_id"] = 0
 
-        if acc_type_col in df2.columns:
+        # -------------------------
+        # ACCIDENT TYPE
+        # -------------------------
+        if acc_type_col and acc_type_col in df2.columns:
             df2[acc_type_col] = normalize_text(df2[acc_type_col])
-            df2 = df2.merge(df_act, left_on=acc_type_col, right_on="accident_type", how="left")
+            df2 = df2.merge(
+                df_act[["accident_type", "accident_type_id"]],
+                left_on=acc_type_col,
+                right_on="accident_type",
+                how="left"
+            )
+        else:
+            df2["accident_type_id"] = 0
 
-        for c in ["date_id", "employer_id", "location_id", "hazard_id", "accident_type_id"]:
-            df2[c] = df2[c].fillna(0).astype(int)
+        # -------------------------
+        # FINAL GUARANTEE (CRITICAL)
+        # -------------------------
+        for col in ["date_id", "employer_id", "location_id", "hazard_id", "accident_type_id"]:
+            if col not in df2.columns:
+                df2[col] = 0
+            df2[col] = df2[col].fillna(0).astype(int)
 
-        return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id"]]
-
+        return df2[[
+            "date_id",
+            "employer_id",
+            "location_id",
+            "hazard_id",
+            "accident_type_id"
+        ]]
+        
     df_fact = pd.concat([
         build_fact(df_aria, "incident_date", "employer", "hazard_class", None),
         build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
