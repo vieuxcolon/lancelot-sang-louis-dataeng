@@ -650,11 +650,14 @@ def create_dimensions_and_fact():
         return obj
 
     def drop_empty_rows(df, key_cols):
-        """Drop rows where all key columns are null."""
-        return df.dropna(how="all", subset=[c for c in key_cols if c in df.columns])
+        """Drop rows where all key columns are null (only if they exist)."""
+        valid = [c for c in key_cols if c in df.columns]
+        if not valid:
+            return df
+        return df.dropna(how="all", subset=valid)
 
     # ==================================================
-    # DROP TABLES
+    # DROP TABLES (DEPENDENCY ORDER)
     # ==================================================
     tables_to_drop = [
         "fact_accidents",
@@ -672,7 +675,7 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # LOAD CLEAN TABLES (NO OVER-CLEANING YET)
+    # LOAD CLEAN TABLES (AS-IS, NO HEAVY CLEANING)
     # ==================================================
     df_aria = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
     df_fatal = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["fatalities_clean_table"]}"', conn)
@@ -702,7 +705,11 @@ def create_dimensions_and_fact():
             .rename(columns={"city": "municipality", "state": "department"})
         )
 
-    df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates()
+    if frames:
+        df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates()
+    else:
+        df_orig_loc = pd.DataFrame(columns=["municipality", "department", "country"])
+
     for col in ["municipality", "department", "country"]:
         df_orig_loc[col] = df_orig_loc[col].fillna("UNKNOWN")
 
@@ -822,7 +829,7 @@ def create_dimensions_and_fact():
             quarter INT
         );
     """)
-    for _, r in df_dates.iterrows():
+    for _, r in df_dates.fillna(0).iterrows():
         cur.execute(
             "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s,%s)",
             [r.date_id, r.date, r.year, r.month, r.day, r.quarter],
@@ -830,18 +837,15 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # DIM EMPLOYER
+    # DIM EMPLOYER (SAFE)
     # ==================================================
-    df_emp = pd.concat(
-        [df[c] for df, c in [
-            (df_aria, "employer"),
-            (df_fatal, "employer"),
-            (df_work, "employer"),
-        ] if c in df.columns],
-        ignore_index=True
-    ).dropna().drop_duplicates()
+    emp_frames = []
+    for df in [df_aria, df_fatal, df_work]:
+        if "employer" in df.columns:
+            emp_frames.append(df[["employer"]])
 
-    if not df_emp.empty:
+    if emp_frames:
+        df_emp = pd.concat(emp_frames, ignore_index=True).dropna().drop_duplicates()
         df_emp["employer"] = normalize_text(df_emp["employer"])
         df_emp.insert(0, "employer_id", range(1, len(df_emp) + 1))
     else:
@@ -854,7 +858,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_employer VALUES (0,'UNKNOWN')")
-    for _, r in df_emp.iterrows():
+    for _, r in df_emp.fillna("UNKNOWN").iterrows():
         cur.execute("INSERT INTO dim_employer VALUES (%s,%s)", [r.employer_id, r.employer])
     conn.commit()
 
@@ -869,8 +873,8 @@ def create_dimensions_and_fact():
     if "nature" in df_work.columns:
         hazard_frames.append(df_work[["nature"]].rename(columns={"nature": "hazard"}))
 
-    df_haz = pd.concat(hazard_frames, ignore_index=True).dropna().drop_duplicates()
-    if not df_haz.empty:
+    if hazard_frames:
+        df_haz = pd.concat(hazard_frames, ignore_index=True).dropna().drop_duplicates()
         df_haz["hazard"] = normalize_text(df_haz["hazard"])
         df_haz.insert(0, "hazard_id", range(1, len(df_haz) + 1))
     else:
@@ -883,7 +887,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_hazard VALUES (0,'UNKNOWN')")
-    for _, r in df_haz.iterrows():
+    for _, r in df_haz.fillna("UNKNOWN").iterrows():
         cur.execute("INSERT INTO dim_hazard VALUES (%s,%s)", [r.hazard_id, r.hazard])
     conn.commit()
 
@@ -896,8 +900,8 @@ def create_dimensions_and_fact():
     if "naturetitle" in df_work.columns:
         acc_frames.append(df_work[["naturetitle"]].rename(columns={"naturetitle": "accident_type"}))
 
-    df_act = pd.concat(acc_frames, ignore_index=True).dropna().drop_duplicates()
-    if not df_act.empty:
+    if acc_frames:
+        df_act = pd.concat(acc_frames, ignore_index=True).dropna().drop_duplicates()
         df_act["accident_type"] = normalize_text(df_act["accident_type"])
         df_act.insert(0, "accident_type_id", range(1, len(df_act) + 1))
     else:
@@ -910,7 +914,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_accident_type VALUES (0,'UNKNOWN')")
-    for _, r in df_act.iterrows():
+    for _, r in df_act.fillna("UNKNOWN").iterrows():
         cur.execute("INSERT INTO dim_accident_type VALUES (%s,%s)", [r.accident_type_id, r.accident_type])
     conn.commit()
 
@@ -928,7 +932,7 @@ def create_dimensions_and_fact():
     """)
 
     # ==================================================
-    # BUILD FACT (FULLY SAFE)
+    # BUILD FACT (BULLETPROOF)
     # ==================================================
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col):
         df2 = df.copy()
@@ -943,8 +947,13 @@ def create_dimensions_and_fact():
 
         if date_col in df2.columns:
             df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
-            df2 = df2.merge(df_dates[["date", "date_id"]],
-                            left_on=date_col, right_on="date", how="left")
+            df2 = df2.merge(
+                df_dates[["date", "date_id"]],
+                left_on=date_col,
+                right_on="date",
+                how="left",
+            )
+            df2.drop(columns=["date"], inplace=True, errors="ignore")
         else:
             df2["date_id"] = 0
 
@@ -956,18 +965,30 @@ def create_dimensions_and_fact():
 
         if employer_col in df2.columns:
             df2[employer_col] = normalize_text(df2[employer_col])
-            df2 = df2.merge(df_emp[["employer", "employer_id"]],
-                            left_on=employer_col, right_on="employer", how="left")
+            df2 = df2.merge(
+                df_emp[["employer", "employer_id"]],
+                left_on=employer_col,
+                right_on="employer",
+                how="left",
+            )
 
         if hazard_col in df2.columns:
             df2[hazard_col] = normalize_text(df2[hazard_col])
-            df2 = df2.merge(df_haz[["hazard", "hazard_id"]],
-                            left_on=hazard_col, right_on="hazard", how="left")
+            df2 = df2.merge(
+                df_haz[["hazard", "hazard_id"]],
+                left_on=hazard_col,
+                right_on="hazard",
+                how="left",
+            )
 
         if acc_type_col and acc_type_col in df2.columns:
             df2[acc_type_col] = normalize_text(df2[acc_type_col])
-            df2 = df2.merge(df_act[["accident_type", "accident_type_id"]],
-                            left_on=acc_type_col, right_on="accident_type", how="left")
+            df2 = df2.merge(
+                df_act[["accident_type", "accident_type_id"]],
+                left_on=acc_type_col,
+                right_on="accident_type",
+                how="left",
+            )
 
         for col in ["date_id", "location_id", "employer_id", "hazard_id", "accident_type_id"]:
             if col not in df2.columns:
@@ -993,7 +1014,7 @@ def create_dimensions_and_fact():
     conn.commit()
     conn.close()
 
-    print("✔ Star schema created successfully (stable, deterministic, null-safe)")
+    print("✔ Star schema created successfully (pandas-safe, deterministic, null-tolerant)")
 
 
 # =====================================================================================
