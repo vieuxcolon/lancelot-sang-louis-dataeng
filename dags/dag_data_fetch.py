@@ -12,7 +12,7 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from datetime import datetime
 from etl_utils import (
     download_csv, download_all_fatalities, download_and_extract_zip,
-    DB_CONFIG, CSV_URL, create_fatalities_clean, load_to_postgres
+    DB_CONFIG, CSV_URL, DATA_DIR, create_fatalities_clean, load_to_postgres
 )
 
 def task_load_ariadb():
