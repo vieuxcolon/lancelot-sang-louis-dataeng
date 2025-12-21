@@ -517,6 +517,11 @@ def pg_connect():
         password=DB_CONFIG["password"]
     )
 
+import os
+import glob
+import pandas as pd
+from etl_utils import DATA_DIR, DB_CONFIG, pg_connect
+
 def create_fatalities_clean(return_df=False):
     """
     Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
@@ -526,47 +531,46 @@ def create_fatalities_clean(return_df=False):
     - return_df (bool): If True, returns the cleaned DataFrame.
     
     Raises:
-    - ValueError: If no matching CSV files are found.
+    - ValueError: If no matching CSV files are found or readable.
     """
-     
-
+    
     # ==================== Find all CSV files ====================
     pattern = os.path.join(DATA_DIR, "fatalities_*.csv")
     files = sorted(glob.glob(pattern))
     
     if not files:
-        try:
-            ls_output = subprocess.check_output(["ls", "-l", DATA_DIR], text=True)
-        except Exception as e:
-            ls_output = f"Could not list directory {DATA_DIR}: {e}"
-        
-        raise ValueError(
-            f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!\n"
-            f"Directory contents:\n{ls_output}"
-        )
-    
+        raise ValueError(f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!")
+
     print(f"Found {len(files)} files: {files}")
     
     # ==================== Read and concatenate ====================
     df_list = []
     for f in files:
         try:
-            df = pd.read_csv(f, encoding="utf-8")
+            # Use 'latin1' to avoid UTF-8 decoding errors
+            df = pd.read_csv(f, encoding="latin1")
             df_list.append(df)
             print(f"Read file: {f} ({len(df)} rows)")
         except Exception as e:
             print(f"Warning: Could not read {f}: {e}")
-    
+
     if not df_list:
+        # Optional: show ls -l output for debugging
+        try:
+            ls_output = os.popen(f"ls -l {pattern}").read()
+        except Exception:
+            ls_output = "Cannot list files."
         raise ValueError(
             f"No fatalities CSV files could be read successfully from {DATA_DIR}!\n"
-            f"Checked files: {files}"
+            f"Checked files: {files}\n"
+            f"ls -l output:\n{ls_output}"
         )
-    
+
     df_clean = pd.concat(df_list, ignore_index=True)
     
     # ==================== Basic cleaning ====================
-    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
+    # Strip whitespace, lowercase, replace spaces with underscores
+    df_clean.columns = [c.strip().lower().replace(" ", "_") for c in df_clean.columns]
     for col in df_clean.select_dtypes(include="object").columns:
         df_clean[col] = df_clean[col].astype(str).str.strip()
     
@@ -578,7 +582,7 @@ def create_fatalities_clean(return_df=False):
     cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
     
-    # Create table with inferred schema from pandas (all TEXT)
+    # Create table with simple TEXT columns
     cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
     create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
     cur.execute(create_sql)
@@ -598,65 +602,6 @@ def create_fatalities_clean(return_df=False):
     if return_df:
         return df_clean
 
-
-# =====================================================================================
-# CREATE ARIADB CLEAN
-# =====================================================================================
-
-def create_ariadb_clean():
-    src_table = DB_CONFIG["ariadb_table"]
-    dst_table = DB_CONFIG["ariadb_clean_table"]
-
-    conn = pg_connect()
-
-    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
-
-    col_map = {
-        "numéro_aria": "aria_id",
-        "titre": "title",
-        "type_de_publication": "publication_type",
-        "date": "incident_date",
-        "code_naf": "industry_code",
-        "pays": "country",
-        "départment": "department",
-        "commune": "municipality",
-        "type_d'accident": "accident_type",
-        "type_évènement": "event_type",
-        "classe_de_danger_clp": "hazard_class",
-    }
-
-    existing = [c for c in col_map if c in df.columns]
-    df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
-
-    if "incident_date" in df.columns:
-        df["incident_date"] = pd.to_datetime(
-            df["incident_date"], errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
-
-    if "aria_id" in df.columns:
-        df.drop_duplicates(subset=["aria_id"], inplace=True)
-
-    cursor = conn.cursor()
-    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-    pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
-
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
-
-    insert_sql = f"""
-        INSERT INTO "{dst_table}"
-        ({", ".join([f'"{c}"' for c in df.columns])})
-        VALUES ({", ".join(["%s"] * len(df.columns))})
-    """
-
-    for _, row in df.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
-
-    conn.commit()
-    conn.close()
-
-    print(f"✔ Created ariadb_clean ({len(df)} rows)")
 
 # =====================================================================================
 # CREATE WORKACCIDENTS CLEAN
