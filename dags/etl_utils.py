@@ -503,85 +503,82 @@ def parse_address(raw):
 
 import glob
 
+
 def create_fatalities_clean(return_df=False):
     """
-    Merge OSHA fatalities CSVs, clean data, write fatalities_clean.csv
-    to landing zone, and load into Postgres.
+    Merge raw fatalities CSV files into a single cleaned landing-zone file
+    (fatalities_clean.csv) and load it into Postgres.
 
-    Final schema:
-      - fatality_id SERIAL PK (Postgres)
-      - date_of_incident DATE
-      - no_of_fatalities INTEGER (always 1)
-      - state TEXT
-      - country TEXT (USA)
+    Design rules:
+    - Never drop rows silently
+    - Missing date/state allowed
+    - One row = one fatality
+    - Landing-zone CSV is the source of truth for DB load
     """
 
-    # --------------------------------------------------
-    # 1. Locate raw files (EXCLUDE fatalities_clean.csv)
-    # --------------------------------------------------
+    OUTPUT_FILE = os.path.join(DATA_DIR, "fatalities_clean.csv")
+
+    # ============================================================
+    # 1. Locate RAW source files only (exclude clean file)
+    # ============================================================
     pattern = os.path.join(DATA_DIR, "fatalities_[1-9].csv")
     files = sorted(glob.glob(pattern))
 
     if not files:
-        raise ValueError(
-            f"No raw fatalities files found in {DATA_DIR}. "
-            f"Check with: ls -l {DATA_DIR}/fatalities_*.csv"
-        )
+        raise ValueError("❌ No raw fatalities_[1-9].csv files found")
 
     print(f"✔ Found {len(files)} raw files")
     for f in files:
         print(f"  - {f}")
 
-    # --------------------------------------------------
-    # 2. Read and merge
-    # --------------------------------------------------
+    # ============================================================
+    # 2. Read & merge
+    # ============================================================
     df_list = []
     for f in files:
-        try:
-            df = pd.read_csv(f, encoding="latin1")
-            df["source_file"] = os.path.basename(f)
-            df_list.append(df)
-            print(f"Read {f}: {len(df)} rows")
-        except Exception as e:
-            print(f"WARNING: Could not read {f}: {e}")
-
-    if not df_list:
-        raise ValueError("All fatalities CSV reads failed")
+        df = pd.read_csv(f, encoding="latin1")
+        df["source_file"] = os.path.basename(f)
+        df_list.append(df)
+        print(f"Read {f}: {len(df)} rows")
 
     df_all = pd.concat(df_list, ignore_index=True)
     print(f"✔ Total merged rows: {len(df_all)}")
 
-    # --------------------------------------------------
+    # ============================================================
     # 3. Normalize column names
-    # --------------------------------------------------
+    # ============================================================
     df_all.columns = [c.strip().lower() for c in df_all.columns]
 
-    # Map columns we care about
-    column_map = {
-        "date": ["date", "date_of_incident", "incident_date"],
-        "state": ["state", "location", "region"]
-    }
+    # ============================================================
+    # 4. Map required columns safely
+    # ============================================================
+    def first_existing(cols):
+        for c in cols:
+            if c in df_all.columns:
+                return df_all[c]
+        return pd.Series([pd.NA] * len(df_all))
 
-    df_clean = pd.DataFrame()
+    df_clean = pd.DataFrame({
+        "date": first_existing(["date", "date_of_incident", "incident_date"]),
+        "no_of_fatalities": first_existing(
+            ["no_of_fatalities", "fatalities", "number_of_fatalities"]
+        ),
+        "state": first_existing(["state", "province", "region"]),
+    })
 
-    for final_col, variants in column_map.items():
-        for v in variants:
-            if v in df_all.columns:
-                df_clean[final_col] = df_all[v]
-                break
-        else:
-            df_clean[final_col] = pd.NA
-
-    # --------------------------------------------------
-    # 4. Cleaning rules (agreed logic)
-    # --------------------------------------------------
-
-    # Parse dates safely
+    # ============================================================
+    # 5. Data cleaning (NO ROW DROPS)
+    # ============================================================
     df_clean["date"] = pd.to_datetime(
         df_clean["date"], errors="coerce"
     ).dt.date
 
-    # Strip state strings
+    df_clean["no_of_fatalities"] = (
+        pd.to_numeric(df_clean["no_of_fatalities"], errors="coerce")
+        .fillna(1)
+        .astype(int)
+    )
+
     df_clean["state"] = (
         df_clean["state"]
         .astype(str)
@@ -589,41 +586,28 @@ def create_fatalities_clean(return_df=False):
         .replace({"": pd.NA, "nan": pd.NA})
     )
 
-    # Drop rows with NO date AND NO state
-    before = len(df_clean)
-    df_clean = df_clean[
-        df_clean["date"].notna() | df_clean["state"].notna()
-    ]
-    after = len(df_clean)
-
-    print(f"✔ Dropped {before - after} rows with no date and no state")
-
-    # Each row = 1 fatality
-    df_clean["no_of_fatalities"] = 1
-
-    # Add country
     df_clean["country"] = "USA"
 
-    # Reorder columns
-    df_clean = df_clean[
-        ["date", "no_of_fatalities", "state", "country"]
-    ]
+    # ============================================================
+    # 6. Hard guard: never allow empty output
+    # ============================================================
+    if df_clean.empty:
+        raise ValueError(
+            "❌ df_clean is EMPTY — cleaning logic error, aborting."
+        )
 
-    # --------------------------------------------------
-    # 5. Write landing-zone CSV
-    # --------------------------------------------------
-    output_csv = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    df_clean.to_csv(output_csv, index=False)
-
+    # ============================================================
+    # 7. Write landing-zone CSV (source of truth)
+    # ============================================================
+    df_clean.to_csv(OUTPUT_FILE, index=False)
     print(
-        f"✔ fatalities_clean.csv written: {output_csv} "
-        f"({len(df_clean)} rows, {df_clean.shape[1]} columns)"
+        f"✔ fatalities_clean.csv written: {OUTPUT_FILE} "
+        f"({len(df_clean)} rows, {len(df_clean.columns)} columns)"
     )
-    print(f"✔ File size: {os.path.getsize(output_csv)} bytes")
 
-    # --------------------------------------------------
-    # 6. Load into PostgreSQL
-    # --------------------------------------------------
+    # ============================================================
+    # 8. Load CSV into PostgreSQL
+    # ============================================================
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -636,9 +620,9 @@ def create_fatalities_clean(return_df=False):
         CREATE TABLE {table} (
             fatality_id SERIAL PRIMARY KEY,
             date_of_incident DATE,
-            no_of_fatalities INTEGER,
+            no_of_fatalities INTEGER NOT NULL,
             state TEXT,
-            country TEXT
+            country TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -649,23 +633,25 @@ def create_fatalities_clean(return_df=False):
         VALUES (%s, %s, %s, %s)
     """
 
-    loaded = 0
-    for _, r in df_clean.iterrows():
-        cur.execute(insert_sql, (
-            r["date"],
-            r["no_of_fatalities"],
-            r["state"],
-            r["country"]
-        ))
-        loaded += 1
+    for _, row in df_clean.iterrows():
+        cur.execute(
+            insert_sql,
+            (
+                row["date"],
+                row["no_of_fatalities"],
+                row["state"],
+                row["country"],
+            ),
+        )
 
     conn.commit()
     conn.close()
 
-    print(f"✔ Loaded {loaded} rows into Postgres table '{table}'")
+    print(f"✔ Loaded {len(df_clean)} rows into Postgres table '{table}'")
 
     if return_df:
         return df_clean
+
 
 
 # =====================================================================================
