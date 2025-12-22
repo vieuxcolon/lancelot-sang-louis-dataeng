@@ -3,7 +3,7 @@
 # This module provides utility functions for ETL processes
 # specifically for downloading, cleaning, and loading datasets
 
-# etl_utils.py
+# etl_utils.py well formatted and self-documented.
 
 import os
 import pandas as pd
@@ -534,7 +534,19 @@ def clean_fatalities_6_to_9(file, out):
 # ------------------------------------------------------------------
 import os
 import pandas as pd
-from etl_utils import read_csv_safe, finalize, clean_fatalities_1_2, clean_fatalities_3, clean_fatalities_4, clean_fatalities_5, clean_fatalities_6_to_9, load_to_postgres, DB_CONFIG, DATA_DIR
+from etl_utils import (
+    read_csv_safe,
+    finalize,
+    clean_fatalities_1_2,
+    clean_fatalities_3,
+    clean_fatalities_4,
+    clean_fatalities_5,
+    clean_fatalities_6_to_9,
+    load_to_postgres,
+    DB_CONFIG,
+    DATA_DIR,
+)
+
 
 def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
@@ -579,7 +591,7 @@ def create_fatalities_clean():
     # --------------------------------------------------
     # Convert date column to Python date objects
     # --------------------------------------------------
-    final_df['date'] = pd.to_datetime(final_df['date'], errors='coerce').dt.date
+    final_df["date"] = pd.to_datetime(final_df["date"], errors="coerce").dt.date
     print("DEBUG: Converted 'date' to Python date objects")
     print(final_df.dtypes)
     print(final_df.head(5))
@@ -590,9 +602,7 @@ def create_fatalities_clean():
     print("=== Loading fatalities_clean.csv into Postgres ===")
 
     load_to_postgres(
-        csv_content=final_path,
-        table_name=DB_CONFIG["fatalities_table"],
-        sep=","
+        csv_content=final_path, table_name=DB_CONFIG["fatalities_table"], sep=","
     )
 
     print("✔ fatalities_clean loaded into Postgres")
