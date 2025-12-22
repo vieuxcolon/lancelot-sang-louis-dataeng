@@ -497,161 +497,228 @@ def parse_address(raw):
 # CREATE FATALITIES CLEAN
 # =====================================================================================
 
-# ==========================================
-# etl_utils.py (excerpt) – fatalities
-# ==========================================
-
 import glob
 
 
-def create_fatalities_clean(return_df=False):
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+def read_csv_safe(path):
+    return pd.read_csv(
+        path,
+        sep=",",
+        quotechar='"',
+        encoding="latin1",
+        engine="python"
+    )
+
+def finalize(df):
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date"].notna()]
+    df["no_of_fatalities"] = 1
+    df["country"] = "USA"
+    return df[["date", "no_of_fatalities", "country"]]
+
+# ------------------------------------------------------------------
+# Fatalities 1 & 2
+# ------------------------------------------------------------------
+def clean_fatalities_1_2(file, out):
+    df = read_csv_safe(file)
+    df = df.iloc[1:]  # drop garbage row
+    df.columns = [
+        "date", "employer", "victim", "hazard",
+        "fatality", "inspection"
+    ]
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
+
+# ------------------------------------------------------------------
+# Fatalities 3
+# ------------------------------------------------------------------
+def clean_fatalities_3(file, out):
+    df = read_csv_safe(file)
+    df.columns = [
+        "date", "company", "victim",
+        "description", "fatality", "inspection"
+    ] + list(df.columns[6:])
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
+
+# ------------------------------------------------------------------
+# Fatalities 4
+# ------------------------------------------------------------------
+def clean_fatalities_4(file, out):
+    df = read_csv_safe(file)
+    df.columns = [
+        "date", "company", "description",
+        "fatality", "inspection"
+    ] + list(df.columns[5:])
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
+
+# ------------------------------------------------------------------
+# Fatalities 5
+# ------------------------------------------------------------------
+def clean_fatalities_5(file, out):
+    df = read_csv_safe(file)
+    df.columns = [
+        "date", "company",
+        "description", "fatality"
+    ]
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
+
+# ------------------------------------------------------------------
+# Fatalities 6–9
+# ------------------------------------------------------------------
+def clean_fatalities_6_to_9(file, out):
+    df = read_csv_safe(file)
+    df.columns = [
+        "fiscal_year", "report_date",
+        "date", "description"
+    ]
+    df = df[df["description"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
+
+def create_fatalities_clean() -> pd.DataFrame:
     """
-    Merge raw fatalities CSV files into a single cleaned landing-zone file
-    (fatalities_clean.csv) and load it into Postgres.
-
-    Design rules:
-    - Never drop rows silently
-    - Missing date/state allowed
-    - One row = one fatality
-    - Landing-zone CSV is the source of truth for DB load
+    Read all fatalities CSV files (1-9), clean, merge, and produce
+    a single clean DataFrame ready for ETL load into Postgres.
+    
+    Returns:
+        pd.DataFrame: cleaned fatalities data
     """
 
-    OUTPUT_FILE = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    raw_dir = os.path.join(DATA_DIR, "fatalities")
+    csv_files = sorted(glob.glob(os.path.join(raw_dir, "*.csv")))
 
-    # ============================================================
-    # 1. Locate RAW source files only (exclude clean file)
-    # ============================================================
-    pattern = os.path.join(DATA_DIR, "fatalities_[1-9].csv")
-    files = sorted(glob.glob(pattern))
+    dfs = []
 
-    if not files:
-        raise ValueError("❌ No raw fatalities_[1-9].csv files found")
+    for f in csv_files:
+        try:
+            # Handle different encodings
+            df = pd.read_csv(f, encoding="utf-8", error_bad_lines=False)
+        except UnicodeDecodeError:
+            df = pd.read_csv(f, encoding="latin1", error_bad_lines=False)
 
-    print(f"✔ Found {len(files)} raw files")
-    for f in files:
-        print(f"  - {f}")
+        # Keep only relevant columns if they exist
+        cols_needed = ["date", "location", "incident", "num_fatalities", "num_catastrophes"]
+        df = df[[c for c in cols_needed if c in df.columns]]
 
-    # ============================================================
-    # 2. Read & merge
-    # ============================================================
-    df_list = []
-    for f in files:
-        df = pd.read_csv(f, encoding="latin1")
-        df["source_file"] = os.path.basename(f)
-        df_list.append(df)
-        print(f"Read {f}: {len(df)} rows")
+        # Drop rows that are headers repeated or entirely empty
+        df = df.dropna(how="all", subset=df.columns)
 
-    df_all = pd.concat(df_list, ignore_index=True)
-    print(f"✔ Total merged rows: {len(df_all)}")
+        dfs.append(df)
 
-    # ============================================================
-    # 3. Normalize column names
-    # ============================================================
-    df_all.columns = [c.strip().lower() for c in df_all.columns]
+    if not dfs:
+        raise ValueError("No fatalities CSV files could be read!")
 
-    # ============================================================
-    # 4. Map required columns safely
-    # ============================================================
-    def first_existing(cols):
-        for c in cols:
-            if c in df_all.columns:
-                return df_all[c]
-        return pd.Series([pd.NA] * len(df_all))
+    # Merge all files into one DataFrame
+    df_clean = pd.concat(dfs, ignore_index=True)
 
-    df_clean = pd.DataFrame({
-        "date": first_existing(["date", "date_of_incident", "incident_date"]),
-        "no_of_fatalities": first_existing(
-            ["no_of_fatalities", "fatalities", "number_of_fatalities"]
-        ),
-        "state": first_existing(["state", "province", "region"]),
-    })
+    # Ensure date column is datetime
+    if "date" in df_clean.columns:
+        df_clean["date"] = pd.to_datetime(df_clean["date"], errors="coerce")
 
-    # ============================================================
-    # 5. Data cleaning (NO ROW DROPS)
-    # ============================================================
-    df_clean["date"] = pd.to_datetime(
-        df_clean["date"], errors="coerce"
-    ).dt.date
+    # -----------------------------
+    # Split location into municipality & department
+    # -----------------------------
+    def split_location(df: pd.DataFrame) -> pd.DataFrame:
+        municipalities = []
+        departments = []
+        for loc in df['location'].fillna('').astype(str):
+            parts = [p.strip() for p in loc.split(',') if p.strip()]
+            if len(parts) >= 2:
+                municipalities.append(parts[-2])
+                departments.append(parts[-1])
+            elif len(parts) == 1:
+                municipalities.append(parts[0])
+                departments.append("UNKNOWN")
+            else:
+                municipalities.append("UNKNOWN")
+                departments.append("UNKNOWN")
+        df['municipality'] = municipalities
+        df['department'] = departments
+        return df
 
-    df_clean["no_of_fatalities"] = (
-        pd.to_numeric(df_clean["no_of_fatalities"], errors="coerce")
-        .fillna(1)
-        .astype(int)
-    )
+    df_clean = split_location(df_clean)
 
-    df_clean["state"] = (
-        df_clean["state"]
-        .astype(str)
-        .str.strip()
-        .replace({"": pd.NA, "nan": pd.NA})
-    )
+    # Add country column (all USA)
+    df_clean['country'] = 'USA'
 
-    df_clean["country"] = "USA"
+    # Optionally: reorder columns for clarity
+    cols_order = [
+        "date", "location", "incident", "num_fatalities", "num_catastrophes",
+        "municipality", "department", "country"
+    ]
+    df_clean = df_clean[[c for c in cols_order if c in df_clean.columns]]
 
-    # ============================================================
-    # 6. Hard guard: never allow empty output
-    # ============================================================
-    if df_clean.empty:
-        raise ValueError(
-            "❌ df_clean is EMPTY — cleaning logic error, aborting."
-        )
+    # -----------------------------
+    # Save CSV for ETL reference
+    # -----------------------------
+    out_file = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    df_clean.to_csv(out_file, index=False)
+    print(f"✔ ETL-ready fatalities_clean.csv saved: {out_file}")
 
-    # ============================================================
-    # 7. Write landing-zone CSV (source of truth)
-    # ============================================================
-    df_clean.to_csv(OUTPUT_FILE, index=False)
-    print(
-        f"✔ fatalities_clean.csv written: {OUTPUT_FILE} "
-        f"({len(df_clean)} rows, {len(df_clean.columns)} columns)"
-    )
-
-    # ============================================================
-    # 8. Load CSV into PostgreSQL
-    # ============================================================
+    # -----------------------------
+    # Insert into Postgres
+    # -----------------------------
     conn = pg_connect()
     cur = conn.cursor()
 
-    table = DB_CONFIG["fatalities_clean_table"]
-
-    cur.execute(f"DROP TABLE IF EXISTS {table}")
+    # Drop table if exists
+    cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
     conn.commit()
 
+    # Create table with serial primary key
     cur.execute(f"""
-        CREATE TABLE {table} (
-            fatality_id SERIAL PRIMARY KEY,
-            date_of_incident DATE,
-            no_of_fatalities INTEGER NOT NULL,
-            state TEXT,
-            country TEXT NOT NULL
+        CREATE TABLE {DB_CONFIG['fatalities_clean_table']} (
+            fatalities_id SERIAL PRIMARY KEY,
+            date DATE,
+            location TEXT,
+            incident TEXT,
+            num_fatalities FLOAT,
+            num_catastrophes FLOAT,
+            municipality TEXT,
+            department TEXT,
+            country TEXT
         )
     """)
     conn.commit()
 
-    insert_sql = f"""
-        INSERT INTO {table}
-        (date_of_incident, no_of_fatalities, state, country)
-        VALUES (%s, %s, %s, %s)
-    """
-
+    # Insert rows
     for _, row in df_clean.iterrows():
         cur.execute(
-            insert_sql,
+            f"""INSERT INTO {DB_CONFIG['fatalities_clean_table']}
+            (date, location, incident, num_fatalities, num_catastrophes, municipality, department, country)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
             (
-                row["date"],
-                row["no_of_fatalities"],
-                row["state"],
-                row["country"],
-            ),
+                row.get("date"),
+                row.get("location"),
+                row.get("incident"),
+                row.get("num_fatalities"),
+                row.get("num_catastrophes"),
+                row.get("municipality"),
+                row.get("department"),
+                row.get("country"),
+            )
         )
-
     conn.commit()
     conn.close()
+    print(f"✔ Fatalities table loaded into Postgres: {DB_CONFIG['fatalities_clean_table']}")
 
-    print(f"✔ Loaded {len(df_clean)} rows into Postgres table '{table}'")
-
-    if return_df:
-        return df_clean
-
+    return df_clean
 
 
 # =====================================================================================
