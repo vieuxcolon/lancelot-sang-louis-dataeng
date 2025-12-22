@@ -503,6 +503,8 @@ from psycopg2.extras import execute_batch
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+DATA_DIR = "/opt/airflow/data"
+
 def read_csv_safe(path):
     return pd.read_csv(
         path,
