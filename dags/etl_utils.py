@@ -635,42 +635,62 @@ def create_fatalities_clean():
 # ------------------------------------------------------------------
 # Postgres loader
 # ------------------------------------------------------------------
-def load_fatalities_to_postgres(pg_connect, table_name, DATA_DIR):
+def load_fatalities_to_postgres(pg_connect, table_name):
+    import os
+    import pandas as pd
+    from psycopg2.extras import execute_batch
+
     csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    print(f"DEBUG: Reading CSV from {csv_path}")
+
     df = pd.read_csv(csv_path, parse_dates=["date"])
+    print(f"DEBUG: CSV loaded with {len(df)} rows")
 
     conn = pg_connect()
     cur = conn.cursor()
+    print("DEBUG: Connected to Postgres")
 
-    cur.execute(f"DROP TABLE IF EXISTS {table_name}")
-    cur.execute(f"""
-        CREATE TABLE {table_name} (
-            fatality_id SERIAL PRIMARY KEY,
-            date DATE NOT NULL,
-            no_of_fatalities INTEGER NOT NULL,
-            country TEXT NOT NULL
-        )
-    """)
-    conn.commit()
+    try:
+        cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+        print(f"DEBUG: Dropped table {table_name} if existed")
+
+        cur.execute(f"""
+            CREATE TABLE {table_name} (
+                fatality_id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                no_of_fatalities INTEGER NOT NULL,
+                country TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        print(f"DEBUG: Created table {table_name}")
+    except Exception as e:
+        print(f"ERROR: Failed to drop/create table: {e}")
+        conn.rollback()
 
     records = df.to_records(index=False)
-    execute_batch(
-        cur,
-        f"""
-        INSERT INTO {table_name}
-        (date, no_of_fatalities, country)
-        VALUES (%s, %s, %s)
-        """,
-        records,
-        page_size=1000
-    )
+    print(f"DEBUG: Prepared {len(records)} records for insert")
 
-    conn.commit()
-    conn.close()
-
-    print(f"✔ Loaded {len(df)} rows into {table_name}")
-
-
+    try:
+        execute_batch(
+            cur,
+            f"""
+            INSERT INTO {table_name}
+            (date, no_of_fatalities, country)
+            VALUES (%s, %s, %s)
+            """,
+            records,
+            page_size=1000
+        )
+        conn.commit()
+        print(f"DEBUG: Inserted {len(records)} rows into {table_name}")
+    except Exception as e:
+        print(f"ERROR: Failed to insert records: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+        print("DEBUG: Connection closed")
 
 # =====================================================================================
 # CREATE ARIADB CLEAN
