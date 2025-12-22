@@ -525,10 +525,7 @@ def finalize(df):
 def clean_fatalities_1_2(file, out):
     df = read_csv_safe(file)
     df = df.iloc[1:]  # drop garbage row
-    df.columns = [
-        "date", "employer", "victim", "hazard",
-        "fatality", "inspection"
-    ]
+    df.columns = ["date", "employer", "victim", "hazard", "fatality", "inspection"]
     df = df[df["fatality"].notna()]
     df = finalize(df)
     df.to_csv(out, index=False)
@@ -539,10 +536,7 @@ def clean_fatalities_1_2(file, out):
 # ------------------------------------------------------------------
 def clean_fatalities_3(file, out):
     df = read_csv_safe(file)
-    df.columns = [
-        "date", "company", "victim",
-        "description", "fatality", "inspection"
-    ] + list(df.columns[6:])
+    df.columns = ["date", "company", "victim", "description", "fatality", "inspection"] + list(df.columns[6:])
     df = df[df["fatality"].notna()]
     df = finalize(df)
     df.to_csv(out, index=False)
@@ -553,10 +547,7 @@ def clean_fatalities_3(file, out):
 # ------------------------------------------------------------------
 def clean_fatalities_4(file, out):
     df = read_csv_safe(file)
-    df.columns = [
-        "date", "company", "description",
-        "fatality", "inspection"
-    ] + list(df.columns[5:])
+    df.columns = ["date", "company", "description", "fatality", "inspection"] + list(df.columns[5:])
     df = df[df["fatality"].notna()]
     df = finalize(df)
     df.to_csv(out, index=False)
@@ -567,10 +558,7 @@ def clean_fatalities_4(file, out):
 # ------------------------------------------------------------------
 def clean_fatalities_5(file, out):
     df = read_csv_safe(file)
-    df.columns = [
-        "date", "company",
-        "description", "fatality"
-    ]
+    df.columns = ["date", "company", "description", "fatality"]
     df = df[df["fatality"].notna()]
     df = finalize(df)
     df.to_csv(out, index=False)
@@ -581,19 +569,30 @@ def clean_fatalities_5(file, out):
 # ------------------------------------------------------------------
 def clean_fatalities_6_to_9(file, out):
     df = read_csv_safe(file)
-    df.columns = [
-        "fiscal_year", "report_date",
-        "date", "description"
-    ]
-    df = df[df["description"].notna()]
+
+    # Rename columns: ensure 4th column is always 'fatality'
+    columns = list(df.columns)
+    new_cols = ["fiscal_year", "report_date", "date", "fatality"]
+    if len(columns) > 4:
+        new_cols.append("description")
+        new_cols += columns[5:]
+    df.columns = new_cols
+
+    # Keep only rows where fatality column has data
+    df = df[df["fatality"].notna()]
+
+    # Finalize: convert date, add no_of_fatalities and country
     df = finalize(df)
+
+    # Write clean CSV
     df.to_csv(out, index=False)
+
     return len(df)
 
 # ------------------------------------------------------------------
 # Master cleaner
 # ------------------------------------------------------------------
-def create_fatalities_clean():
+def create_fatalities_clean(DATA_DIR):
     print("=== Cleaning fatalities files ===")
 
     cleaners = [
@@ -634,7 +633,7 @@ def create_fatalities_clean():
 # ------------------------------------------------------------------
 # Postgres loader
 # ------------------------------------------------------------------
-def load_fatalities_to_postgres(pg_connect, table_name):
+def load_fatalities_to_postgres(pg_connect, table_name, DATA_DIR):
     csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
     df = pd.read_csv(csv_path, parse_dates=["date"])
 
@@ -668,6 +667,7 @@ def load_fatalities_to_postgres(pg_connect, table_name):
     conn.close()
 
     print(f"✔ Loaded {len(df)} rows into {table_name}")
+
 
 
 # =====================================================================================
