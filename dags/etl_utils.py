@@ -827,9 +827,7 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 
 def create_dimensions_and_fact():
-    import pandas as pd
-    from etl_utils import pg_connect, DB_CONFIG
-
+ 
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1115,110 +1113,44 @@ def create_dimensions_and_fact():
     # ==================================================
     # BUILD FACT FUNCTION
     # ==================================================
-    
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col, industry_col=None):
         df2 = df.copy()
-
-        # --------------------------------------------------
-        # Ensure necessary columns exist
-        # --------------------------------------------------
         for col in ["municipality","department","country"]:
             if col not in df2.columns:
                 df2[col] = "UNKNOWN"
         df2[["municipality","department","country"]] = normalize_text(df2[["municipality","department","country"]].fillna("UNKNOWN"))
-
-        # --------------------------------------------------
-        # Date merge
-        # --------------------------------------------------
+        # date
         if date_col in df2.columns:
             df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
             df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
             df2.drop(columns=["date"], inplace=True, errors="ignore")
         else:
             df2["date_id"] = 0
-        print(f"[DEBUG] After date merge: missing date_id = {df2['date_id'].isna().sum()}")
-
-        # --------------------------------------------------
-        # USA country standardization
-        # --------------------------------------------------
-        df2["country"] = df2["country"].replace({
-            "USA": "UNITED STATES",
-            "US": "UNITED STATES",
-            "ETATS-UNIS": "UNITED STATES"
-        })
-
-        # --------------------------------------------------
-        # Location merge
-        # --------------------------------------------------
-        df2 = df2.merge(
-            df_dim_location[["municipality","department","country","location_id"]],
-            on=["municipality","department","country"],
-            how="left"
-        )
-        missing_loc = df2['location_id'].isna().sum()
-        print(f"[DEBUG] After location merge: missing location_id = {missing_loc}")
-        if missing_loc > 0:
-            print(df2[df2['location_id'].isna()][['municipality','department','country']].drop_duplicates().head(10))
-
-            # --------------------------------------------------
-            # USA fallback: assign first US location_id
-            # --------------------------------------------------
-            us_orphans = df2[df2['location_id'].isna() & (df2['country'] == 'UNITED STATES')]
-            if not us_orphans.empty:
-                us_loc_id = df_dim_location[df_dim_location['country'] == 'UNITED STATES']['location_id'].min()
-                df2.loc[us_orphans.index, 'location_id'] = us_loc_id
-                print(f"[DEBUG] Applied USA fallback for {len(us_orphans)} rows")
-
-        # --------------------------------------------------
-        # Employer merge
-        # --------------------------------------------------
+        # location
+        df2 = df2.merge(df_dim_location[["municipality","department","country","location_id"]], on=["municipality","department","country"], how="left")
+        # employer
         if employer_col in df2.columns:
             df2[employer_col] = normalize_text(df2[employer_col])
             df2 = df2.merge(df_emp[["employer","employer_id"]], left_on=employer_col, right_on="employer", how="left")
-        missing_emp = df2['employer_id'].isna().sum()
-        print(f"[DEBUG] After employer merge: missing employer_id = {missing_emp}")
-
-        # --------------------------------------------------
-        # Hazard merge
-        # --------------------------------------------------
+        # hazard
         if hazard_col in df2.columns:
             df2[hazard_col] = normalize_text(df2[hazard_col])
             df2 = df2.merge(df_haz[["hazard","hazard_id"]], left_on=hazard_col, right_on="hazard", how="left")
-        missing_haz = df2['hazard_id'].isna().sum()
-        print(f"[DEBUG] After hazard merge: missing hazard_id = {missing_haz}")
-
-        # --------------------------------------------------
-        # Accident type merge
-        # --------------------------------------------------
+        # accident_type
         if acc_type_col and acc_type_col in df2.columns:
             df2[acc_type_col] = normalize_text(df2[acc_type_col])
-            df2 = df2.merge(df_act[["accident_type","accident_type_id"]],
-                            left_on=acc_type_col, right_on="accident_type", how="left")
-        missing_acc = df2['accident_type_id'].isna().sum()
-        print(f"[DEBUG] After accident_type merge: missing accident_type_id = {missing_acc}")
-
-        # --------------------------------------------------
-        # Industry merge
-        # --------------------------------------------------
+            df2 = df2.merge(df_act[["accident_type","accident_type_id"]], left_on=acc_type_col, right_on="accident_type", how="left")
+        # industry
         if industry_col and industry_col in df2.columns:
             df2[industry_col] = normalize_text(df2[industry_col])
-            df2 = df2.merge(df_ind[["industry_code","industry_id"]],
-                            left_on=industry_col, right_on="industry_code", how="left")
-        missing_ind = df2['industry_id'].isna().sum()
-        print(f"[DEBUG] After industry merge: missing industry_id = {missing_ind}")
-
-        # --------------------------------------------------
-        # Fill missing IDs with 0 (unknown)
-        # --------------------------------------------------
+            df2 = df2.merge(df_ind[["industry_code","industry_id"]], left_on=industry_col, right_on="industry_code", how="left")
+        # fill missing
         for col in ["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]:
             if col not in df2.columns:
                 df2[col] = 0
             df2[col] = df2[col].fillna(0).astype(int)
-
-        print(f"[DEBUG] After all merges: total orphan rows (location_id=0) = {(df2['location_id']==0).sum()}")
         return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id","industry_id"]]
 
-     
     # ==================================================
     # BUILD FACT FROM ALL SOURCES
     # ==================================================
@@ -1237,6 +1169,7 @@ def create_dimensions_and_fact():
     conn.close()
 
     print("✔ Star schema created successfully (all sources and dimensions included)")
+
 
 # =====================================================================================
 # STAR SCHEMA TESTS
