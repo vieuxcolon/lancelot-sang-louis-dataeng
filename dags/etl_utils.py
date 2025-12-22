@@ -498,23 +498,19 @@ def clean_fatalities_5(file, out):
 def clean_fatalities_6_to_9(file, out):
     df = read_csv_safe(file)
 
-    # Rename columns: ensure 4th column is always 'fatality'
-    columns = list(df.columns)
-    new_cols = ["fiscal_year", "report_date", "date", "fatality"]
-    if len(columns) > 4:
-        new_cols.append("description")
-        new_cols += columns[5:]
-    df.columns = new_cols
+    # Always take the first 4 columns only
+    df = df.iloc[:, :4]
 
-    # Keep only rows where fatality column has data
+    # Rename deterministically
+    df.columns = ["fiscal_year", "report_date", "date", "fatality"]
+
+    # Keep only rows with fatality signal
     df = df[df["fatality"].notna()]
 
-    # Finalize: convert date, add no_of_fatalities and country
+    # Canonical projection
     df = finalize(df)
 
-    # Write clean CSV
     df.to_csv(out, index=False)
-
     return len(df)
 
 # ------------------------------------------------------------------
