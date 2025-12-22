@@ -57,6 +57,7 @@ DB_CONFIG = {
     "ariadb_table": "ariadb",
     "ariadb_clean_table": "ariadb_clean",
     "workaccidents_table": "workaccidents",
+    "workaccidents_clean_table": "workaccidents_clean",
     "fatalities_table": "fatalities",
     "fatalities_clean_table": "fatalities_clean",
 }
@@ -260,84 +261,9 @@ def load_to_postgres(csv_content, table_name, skiprows=0, sep=";"):
 
     print(f"✔ Loaded table: {table_name} ({len(df)} rows)")
 
-
-# =====================================================================================
-# create_fatalities_clean.py
-# =====================================================================================
-
-
-def create_fatalities_clean(return_df=False):
-    """
-    Reads all fatalities CSVs from DATA_DIR matching 'fatalities_*.csv',
-    performs basic cleaning, and loads the resulting table into Postgres.
-    
-    Parameters:
-    - return_df (bool): If True, returns the cleaned DataFrame.
-    
-    Raises:
-    - ValueError: If no matching CSV files are found.
-    """
-    
-    # ==================== Find all CSV files ====================
-    pattern = os.path.join(DATA_DIR, "fatalities_*.csv")
-    files = sorted(glob.glob(pattern))
-    
-    if not files:
-        raise ValueError(f"No fatalities CSV files found in {DATA_DIR} with pattern 'fatalities_*.csv'!")
-    
-    print(f"Found {len(files)} files: {files}")
-    
-    # ==================== Read and concatenate ====================
-    df_list = []
-    for f in files:
-        try:
-            df = pd.read_csv(f, encoding="utf-8")
-            df_list.append(df)
-            print(f"Read file: {f} ({len(df)} rows)")
-        except Exception as e:
-            print(f"Warning: Could not read {f}: {e}")
-    
-    if not df_list:
-        raise ValueError("No fatalities CSV files could be read successfully!")
-    
-    df_clean = pd.concat(df_list, ignore_index=True)
-    
-    # ==================== Basic cleaning ====================
-    # Example: strip strings and standardize column names
-    df_clean.columns = [c.strip().lower() for c in df_clean.columns]
-    for col in df_clean.select_dtypes(include="object").columns:
-        df_clean[col] = df_clean[col].astype(str).str.strip()
-    
-    # ==================== Load into PostgreSQL ====================
-    conn = pg_connect()
-    cur = conn.cursor()
-    
-    # Drop old clean table if exists
-    cur.execute(f"DROP TABLE IF EXISTS {DB_CONFIG['fatalities_clean_table']}")
-    conn.commit()
-    
-    # Create table with inferred schema from pandas
-    # We'll use simple TEXT columns for all
-    cols_defs = ", ".join([f"{c} TEXT" for c in df_clean.columns])
-    create_sql = f"CREATE TABLE {DB_CONFIG['fatalities_clean_table']} ({cols_defs});"
-    cur.execute(create_sql)
-    conn.commit()
-    
-    # Insert rows
-    for _, row in df_clean.iterrows():
-        placeholders = ",".join(["%s"] * len(df_clean.columns))
-        insert_sql = f"INSERT INTO {DB_CONFIG['fatalities_clean_table']} VALUES ({placeholders})"
-        cur.execute(insert_sql, list(row))
-    
-    conn.commit()
-    conn.close()
-    
-    print(f"✔ Successfully loaded {len(df_clean)} rows into '{DB_CONFIG['fatalities_clean_table']}'")
-    
-    if return_df:
-        return df_clean
-
-
+# ============================================================
+# LOAD FATALITIES HELPERS
+# ============================================================
 
 def load_fatalities_first(csv_text, sep=","):
     """Drop & recreate fatalities table before loading fatalities_1."""
@@ -610,87 +536,45 @@ def create_fatalities_clean():
     ]
 
     clean_files = []
+    dfs = []
 
     for fname, fn in cleaners:
         src = os.path.join(DATA_DIR, fname)
         dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
+
+        if not os.path.exists(src):
+            print(f"⚠ File not found, skipping: {src}")
+            continue
+
         rows = fn(src, dst)
         clean_files.append(dst)
+        dfs.append(pd.read_csv(dst))
         print(f"✔ {fname} → {rows} rows")
 
-    # --------------------------------------------------------------
+    # --------------------------------------------------
     # Final merge
-    # --------------------------------------------------------------
-    dfs = [pd.read_csv(f, parse_dates=["date"]) for f in clean_files]
+    # --------------------------------------------------
     final_df = pd.concat(dfs, ignore_index=True)
+    final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    final_df.to_csv(final_path, index=False)
 
-    out_final = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    final_df.to_csv(out_final, index=False)
-
-    print(f"✔ Final merge written: {out_final}")
+    print(f"✔ Final merge written: {final_path}")
     print(f"✔ Total rows: {len(final_df)}")
 
-    return out_final
+    # --------------------------------------------------
+    # Load into Postgres (ROBUST PATH)
+    # --------------------------------------------------
+    print("=== Loading fatalities_clean.csv into Postgres ===")
 
-# ------------------------------------------------------------------
-# Postgres loader
-# ------------------------------------------------------------------
-def load_fatalities_to_postgres(pg_connect, table_name):
-    import os
-    import pandas as pd
-    from psycopg2.extras import execute_batch
+    load_to_postgres(
+        csv_content=final_path,
+        table_name=DB_CONFIG["fatalities_table"],
+        sep=","
+    )
 
-    csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    print(f"DEBUG: Reading CSV from {csv_path}")
+    print("✔ fatalities_clean loaded into Postgres")
 
-    df = pd.read_csv(csv_path, parse_dates=["date"])
-    print(f"DEBUG: CSV loaded with {len(df)} rows")
-
-    conn = pg_connect()
-    cur = conn.cursor()
-    print("DEBUG: Connected to Postgres")
-
-    try:
-        cur.execute(f"DROP TABLE IF EXISTS {table_name}")
-        print(f"DEBUG: Dropped table {table_name} if existed")
-
-        cur.execute(f"""
-            CREATE TABLE {table_name} (
-                fatality_id SERIAL PRIMARY KEY,
-                date DATE NOT NULL,
-                no_of_fatalities INTEGER NOT NULL,
-                country TEXT NOT NULL
-            )
-        """)
-        conn.commit()
-        print(f"DEBUG: Created table {table_name}")
-    except Exception as e:
-        print(f"ERROR: Failed to drop/create table: {e}")
-        conn.rollback()
-
-    records = df.to_records(index=False)
-    print(f"DEBUG: Prepared {len(records)} records for insert")
-
-    try:
-        execute_batch(
-            cur,
-            f"""
-            INSERT INTO {table_name}
-            (date, no_of_fatalities, country)
-            VALUES (%s, %s, %s)
-            """,
-            records,
-            page_size=1000
-        )
-        conn.commit()
-        print(f"DEBUG: Inserted {len(records)} rows into {table_name}")
-    except Exception as e:
-        print(f"ERROR: Failed to insert records: {e}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
-        print("DEBUG: Connection closed")
+    return None
 
 # =====================================================================================
 # CREATE ARIADB CLEAN
