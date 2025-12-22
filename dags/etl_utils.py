@@ -503,7 +503,7 @@ from psycopg2.extras import execute_batch
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-DATA_DIR = "/opt/airflow/data"
+# DATA_DIR = "/opt/airflow/data"
 
 def read_csv_safe(path):
     return pd.read_csv(
@@ -594,7 +594,7 @@ def clean_fatalities_6_to_9(file, out):
 # ------------------------------------------------------------------
 # Master cleaner
 # ------------------------------------------------------------------
-def create_fatalities_clean(DATA_DIR):
+def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
 
     cleaners = [
