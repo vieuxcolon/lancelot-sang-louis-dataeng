@@ -516,6 +516,8 @@ def clean_fatalities_6_to_9(file, out):
 # ------------------------------------------------------------------
 # Master cleaner
 # ------------------------------------------------------------------
+
+
 def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
 
@@ -531,8 +533,8 @@ def create_fatalities_clean():
         ("fatalities_9.csv", clean_fatalities_6_to_9),
     ]
 
-    clean_files = []
     dfs = []
+    clean_files = []
 
     for fname, fn in cleaners:
         src = os.path.join(DATA_DIR, fname)
@@ -543,31 +545,35 @@ def create_fatalities_clean():
             continue
 
         rows = fn(src, dst)
+        print(f"✔ {fname} → {rows} rows cleaned")
         clean_files.append(dst)
         dfs.append(pd.read_csv(dst))
-        print(f"✔ {fname} → {rows} rows")
 
     # --------------------------------------------------
     # Final merge
     # --------------------------------------------------
     final_df = pd.concat(dfs, ignore_index=True)
     final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    final_df.to_csv(final_path, index=False)
 
+    # Convert all columns to string/text for load_to_postgres
+    final_df = final_df.astype(str)
+    print("DEBUG: Converted all columns to TEXT for Postgres")
+    print(final_df.dtypes)
+    print(final_df.head(5))
+
+    final_df.to_csv(final_path, index=False)
     print(f"✔ Final merge written: {final_path}")
     print(f"✔ Total rows: {len(final_df)}")
 
     # --------------------------------------------------
-    # Load into Postgres (ROBUST PATH)
+    # Load into Postgres
     # --------------------------------------------------
     print("=== Loading fatalities_clean.csv into Postgres ===")
-
     load_to_postgres(
         csv_content=final_path,
         table_name=DB_CONFIG["fatalities_table"],
         sep=","
     )
-
     print("✔ fatalities_clean loaded into Postgres")
 
     return None
