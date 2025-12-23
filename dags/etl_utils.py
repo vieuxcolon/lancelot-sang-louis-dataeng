@@ -1111,46 +1111,75 @@ def create_dimensions_and_fact():
     """)
 
     # ==================================================
-    # BUILD FACT FUNCTION
+    # BUILD FACT FUNCTION (COUNTRY ONLY)
     # ==================================================
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col, industry_col=None):
         df2 = df.copy()
-        for col in ["municipality","department","country"]:
-            if col not in df2.columns:
-                df2[col] = "UNKNOWN"
-        df2[["municipality","department","country"]] = normalize_text(df2[["municipality","department","country"]].fillna("UNKNOWN"))
-        # date
+        
+        # Ensure country column exists
+        if "country" not in df2.columns:
+            df2["country"] = "UNKNOWN"
+        df2["country"] = df2["country"].fillna("UNKNOWN").astype(str).str.upper()
+        
+        # Date dimension
         if date_col in df2.columns:
             df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
             df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
             df2.drop(columns=["date"], inplace=True, errors="ignore")
         else:
             df2["date_id"] = 0
-        # location
-        df2 = df2.merge(df_dim_location[["municipality","department","country","location_id"]], on=["municipality","department","country"], how="left")
-        # employer
+        
+        # Location: merge on country only
+        df2 = df2.merge(
+            df_dim_location[["country","location_id"]],
+            left_on="country",
+            right_on="country",
+            how="left"
+        )
+    
+        # Employer
         if employer_col in df2.columns:
-            df2[employer_col] = normalize_text(df2[employer_col])
+            df2[employer_col] = df2[employer_col].astype(str).str.strip().str.upper()
             df2 = df2.merge(df_emp[["employer","employer_id"]], left_on=employer_col, right_on="employer", how="left")
-        # hazard
+        
+        # Hazard
         if hazard_col in df2.columns:
-            df2[hazard_col] = normalize_text(df2[hazard_col])
+            df2[hazard_col] = df2[hazard_col].astype(str).str.strip().str.upper()
             df2 = df2.merge(df_haz[["hazard","hazard_id"]], left_on=hazard_col, right_on="hazard", how="left")
-        # accident_type
+        
+        # Accident type
         if acc_type_col and acc_type_col in df2.columns:
-            df2[acc_type_col] = normalize_text(df2[acc_type_col])
+            df2[acc_type_col] = df2[acc_type_col].astype(str).str.strip().str.upper()
             df2 = df2.merge(df_act[["accident_type","accident_type_id"]], left_on=acc_type_col, right_on="accident_type", how="left")
-        # industry
+        
+        # Industry
         if industry_col and industry_col in df2.columns:
-            df2[industry_col] = normalize_text(df2[industry_col])
+            df2[industry_col] = df2[industry_col].astype(str).str.strip().str.upper()
             df2 = df2.merge(df_ind[["industry_code","industry_id"]], left_on=industry_col, right_on="industry_code", how="left")
-        # fill missing
+        
+        # Fill missing
         for col in ["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]:
             if col not in df2.columns:
                 df2[col] = 0
             df2[col] = df2[col].fillna(0).astype(int)
+        
         return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id","industry_id"]]
-
+    
+    # ==================================================
+    # CREATE FACT TABLE
+    # ==================================================
+    cur.execute("""
+        CREATE TABLE fact_accidents (
+            date_id INT,
+            employer_id INT,
+            location_id INT,  -- location now represents country only
+            hazard_id INT,
+            accident_type_id INT,
+            industry_id INT
+        );
+    """)
+    conn.commit()
+    
     # ==================================================
     # BUILD FACT FROM ALL SOURCES
     # ==================================================
@@ -1159,15 +1188,16 @@ def create_dimensions_and_fact():
         build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
         build_fact(df_work, "accident_date", "employer", "nature", "naturetitle"),
     ], ignore_index=True)
-
-    df_fact = df_fact[(df_fact["date_id"] != 0) | (df_fact["location_id"] != 0)]
-
+    
+    # Remove rows with no date or country
+    df_fact = df_fact[(df_fact["date_id"] != 0) & (df_fact["location_id"] != 0)]
+    
     for _, r in df_fact.iterrows():
         cur.execute("INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s,%s)", list(r))
-
+    
     conn.commit()
     conn.close()
-
+    
     print("✔ Star schema created successfully (all sources and dimensions included)")
 
 
