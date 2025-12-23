@@ -81,26 +81,6 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
 
-def normalize_country(value):
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "UNKNOWN"
-
-    s = str(value).strip().upper()
-
-    # Normalize accents
-    s = (
-        s.replace("É", "E")
-         .replace("È", "E")
-         .replace("Ê", "E")
-    )
-
-    if s in {
-        "USA", "US", "UNITED STATES",
-        "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"
-    }:
-        return "USA"
-
-    return s
 
 def download_all_fatalities():
     """
@@ -851,6 +831,27 @@ def create_dimensions_and_fact():
     # ==================================================
     # HELPERS
     # ==================================================
+    def normalize_country(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return "UNKNOWN"
+    
+        s = str(value).strip().upper()
+    
+        # Normalize accents
+        s = (
+            s.replace("É", "E")
+             .replace("È", "E")
+             .replace("Ê", "E")
+        )
+    
+        if s in {
+            "USA", "US", "UNITED STATES",
+            "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"
+        }:
+            return "USA"
+    
+        return s
+
     def normalize_text(obj):
         if isinstance(obj, pd.Series):
             return obj.astype(str).str.strip().str.upper()
