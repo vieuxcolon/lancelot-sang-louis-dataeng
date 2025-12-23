@@ -834,91 +834,17 @@ def create_dimensions_and_fact():
     conn = pg_connect()
     cur = conn.cursor()
 
-    # -------------------- DIM_DATE --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_date;")
-    cur.execute("""
-    CREATE TABLE dim_date (
-        date_id INT PRIMARY KEY,
-        date DATE,
-        year INT,
-        month INT,
-        day INT
-    );
-    """)
-
-    # -------------------- DIM_EMPLOYER --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_employer;")
-    cur.execute("""
-    CREATE TABLE dim_employer (
-        employer_id INT PRIMARY KEY,
-        employer TEXT
-    );
-    """)
-
-    # -------------------- DIM_COUNTRY --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_country;")
-    cur.execute("""
-    CREATE TABLE dim_country (
-        country_id SERIAL PRIMARY KEY,
-        country_name TEXT UNIQUE
-    );
-    """)
-
-    # Optional: if dim_location is kept
-    cur.execute("DROP TABLE IF EXISTS dim_location;")
-    cur.execute("""
-    CREATE TABLE dim_location (
-        location_id INT PRIMARY KEY,
-        country_id INT REFERENCES dim_country(country_id)
-    );
-    """)
-
-    # -------------------- DIM_HAZARD --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_hazard;")
-    cur.execute("""
-    CREATE TABLE dim_hazard (
-        hazard_id INT PRIMARY KEY,
-        hazard TEXT
-    );
-    """)
-
-    # -------------------- DIM_ACCIDENT_TYPE --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_accident_type;")
-    cur.execute("""
-    CREATE TABLE dim_accident_type (
-        accident_type_id INT PRIMARY KEY,
-        accident_type TEXT
-    );
-    """)
-
-    # -------------------- DIM_INDUSTRY --------------------
-    cur.execute("DROP TABLE IF EXISTS dim_industry;")
-    cur.execute("""
-    CREATE TABLE dim_industry (
-        industry_id INT PRIMARY KEY,
-        industry_code TEXT
-    );
-    """)
-
-    # -------------------- FACT_ACCIDENTS --------------------
-    cur.execute("DROP TABLE IF EXISTS fact_accidents;")
-    cur.execute("""
-    CREATE TABLE fact_accidents (
-        date_id INT,
-        employer_id INT,
-        location_id INT,   -- now represents country only
-        hazard_id INT,
-        accident_type_id INT,
-        industry_id INT
-    );
-    """)
-
-    # Commit changes and close connection
+    # ==================================================
+    # DROP TABLES (dependency order)
+    # ==================================================
+    tables_to_drop = [
+        "fact_accidents", "dim_location", "dim_industry", "dim_accident_type",
+        "dim_hazard", "dim_employer", "dim_date", "country_synonym",
+        "dim_country", "original_dim_location"
+    ]
+    for t in tables_to_drop:
+        cur.execute(f"DROP TABLE IF EXISTS {t} CASCADE;")
     conn.commit()
-    cur.close()
-    conn.close()
-
-    print("✔ All dimensions and fact table created (drop-if-exists applied).")
 
     # ==================================================
     # HELPERS
@@ -937,25 +863,6 @@ def create_dimensions_and_fact():
         if not valid:
             return df
         return df.dropna(how="all", subset=valid)
-
-    # ==================================================
-    # DROP TABLES (DEPENDENCY ORDER)
-    # ==================================================
-    tables_to_drop = [
-        "fact_accidents",
-        "dim_location",
-        "dim_industry",
-        "dim_accident_type",
-        "dim_hazard",
-        "dim_employer",
-        "dim_date",
-        "country_synonym",
-        "dim_country",
-        "original_dim_location",
-    ]
-    for t in tables_to_drop:
-        cur.execute(f"DROP TABLE IF EXISTS {t}")
-    conn.commit()
 
     # ==================================================
     # LOAD CLEAN TABLES
@@ -979,8 +886,7 @@ def create_dimensions_and_fact():
     if all(c in df_work.columns for c in ["city", "state", "country"]):
         frames.append(df_work[["city", "state", "country"]].rename(columns={"city": "municipality", "state": "department"}))
     df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame(columns=["municipality", "department", "country"])
-    for col in ["municipality", "department", "country"]:
-        df_orig_loc[col] = df_orig_loc[col].fillna("UNKNOWN")
+    df_orig_loc = df_orig_loc.fillna("UNKNOWN")
 
     cur.execute("""
         CREATE TABLE original_dim_location (
@@ -1076,7 +982,6 @@ def create_dimensions_and_fact():
         pd.to_datetime(df_fatal.get("date_of_incident"), errors="coerce"),
         pd.to_datetime(df_work.get("accident_date"), errors="coerce")
     ]).dropna().drop_duplicates().sort_values()
-
     df_dates = pd.DataFrame({"date": all_dates})
     df_dates["year"] = df_dates["date"].dt.year
     df_dates["month"] = df_dates["date"].dt.month
@@ -1094,7 +999,7 @@ def create_dimensions_and_fact():
             quarter INT
         );
     """)
-    for _, r in df_dates.fillna(0).iterrows():
+    for _, r in df_dates.iterrows():
         cur.execute("INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s,%s)", [r.date_id,r.date,r.year,r.month,r.day,r.quarter])
     conn.commit()
 
@@ -1106,6 +1011,7 @@ def create_dimensions_and_fact():
     if not df_emp.empty:
         df_emp["employer"] = normalize_text(df_emp["employer"])
         df_emp.insert(0, "employer_id", range(1, len(df_emp)+1))
+
     cur.execute("""
         CREATE TABLE dim_employer (
             employer_id INT PRIMARY KEY,
@@ -1113,7 +1019,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_employer VALUES (0,'UNKNOWN')")
-    for _, r in df_emp.fillna("UNKNOWN").iterrows():
+    for _, r in df_emp.iterrows():
         cur.execute("INSERT INTO dim_employer VALUES (%s,%s)", [r.employer_id,r.employer])
     conn.commit()
 
@@ -1131,6 +1037,7 @@ def create_dimensions_and_fact():
     if not df_haz.empty:
         df_haz["hazard"] = normalize_text(df_haz["hazard"])
         df_haz.insert(0, "hazard_id", range(1, len(df_haz)+1))
+
     cur.execute("""
         CREATE TABLE dim_hazard (
             hazard_id INT PRIMARY KEY,
@@ -1138,7 +1045,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_hazard VALUES (0,'UNKNOWN')")
-    for _, r in df_haz.fillna("UNKNOWN").iterrows():
+    for _, r in df_haz.iterrows():
         cur.execute("INSERT INTO dim_hazard VALUES (%s,%s)", [r.hazard_id,r.hazard])
     conn.commit()
 
@@ -1156,6 +1063,7 @@ def create_dimensions_and_fact():
     if not df_act.empty:
         df_act["accident_type"] = normalize_text(df_act["accident_type"])
         df_act.insert(0,"accident_type_id", range(1,len(df_act)+1))
+
     cur.execute("""
         CREATE TABLE dim_accident_type (
             accident_type_id INT PRIMARY KEY,
@@ -1163,7 +1071,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_accident_type VALUES (0,'UNKNOWN')")
-    for _, r in df_act.fillna("UNKNOWN").iterrows():
+    for _, r in df_act.iterrows():
         cur.execute("INSERT INTO dim_accident_type VALUES (%s,%s)", [r.accident_type_id,r.accident_type])
     conn.commit()
 
@@ -1174,6 +1082,7 @@ def create_dimensions_and_fact():
     if not df_ind.empty:
         df_ind["industry_code"] = normalize_text(df_ind["industry_code"])
         df_ind.insert(0,"industry_id", range(1,len(df_ind)+1))
+
     cur.execute("""
         CREATE TABLE dim_industry (
             industry_id INT PRIMARY KEY,
@@ -1181,7 +1090,7 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_industry VALUES (0,'UNKNOWN')")
-    for _, r in df_ind.fillna("UNKNOWN").iterrows():
+    for _, r in df_ind.iterrows():
         cur.execute("INSERT INTO dim_industry VALUES (%s,%s)", [r.industry_id,r.industry_code])
     conn.commit()
 
@@ -1198,19 +1107,17 @@ def create_dimensions_and_fact():
             industry_id INT
         );
     """)
+    conn.commit()
 
     # ==================================================
-    # BUILD FACT FUNCTION (COUNTRY ONLY)
+    # BUILD FACT FUNCTION
     # ==================================================
     def build_fact(df, date_col, employer_col, hazard_col, acc_type_col, industry_col=None):
         df2 = df.copy()
         
-        # Ensure country column exists
-        if "country" not in df2.columns:
-            df2["country"] = "UNKNOWN"
-        df2["country"] = df2["country"].fillna("UNKNOWN").astype(str).str.upper()
+        df2["country"] = df2.get("country", "UNKNOWN").fillna("UNKNOWN").astype(str).str.upper()
         
-        # Date dimension
+        # Date
         if date_col in df2.columns:
             df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
             df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
@@ -1218,14 +1125,9 @@ def create_dimensions_and_fact():
         else:
             df2["date_id"] = 0
         
-        # Location: merge on country only
-        df2 = df2.merge(
-            df_dim_location[["country","location_id"]],
-            left_on="country",
-            right_on="country",
-            how="left"
-        )
-    
+        # Location
+        df2 = df2.merge(df_dim_location[["country","location_id"]], on="country", how="left")
+        
         # Employer
         if employer_col in df2.columns:
             df2[employer_col] = df2[employer_col].astype(str).str.strip().str.upper()
@@ -1246,29 +1148,13 @@ def create_dimensions_and_fact():
             df2[industry_col] = df2[industry_col].astype(str).str.strip().str.upper()
             df2 = df2.merge(df_ind[["industry_code","industry_id"]], left_on=industry_col, right_on="industry_code", how="left")
         
-        # Fill missing
         for col in ["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]:
             if col not in df2.columns:
                 df2[col] = 0
             df2[col] = df2[col].fillna(0).astype(int)
         
         return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id","industry_id"]]
-    
-    # ==================================================
-    # CREATE FACT TABLE
-    # ==================================================
-    cur.execute("""
-        CREATE TABLE fact_accidents (
-            date_id INT,
-            employer_id INT,
-            location_id INT,  -- location now represents country only
-            hazard_id INT,
-            accident_type_id INT,
-            industry_id INT
-        );
-    """)
-    conn.commit()
-    
+
     # ==================================================
     # BUILD FACT FROM ALL SOURCES
     # ==================================================
@@ -1277,17 +1163,16 @@ def create_dimensions_and_fact():
         build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
         build_fact(df_work, "accident_date", "employer", "nature", "naturetitle"),
     ], ignore_index=True)
-    
-    # Remove rows with no date or country
+
     df_fact = df_fact[(df_fact["date_id"] != 0) & (df_fact["location_id"] != 0)]
-    
+
     for _, r in df_fact.iterrows():
         cur.execute("INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s,%s)", list(r))
-    
     conn.commit()
     conn.close()
-    
-    print("✔ Star schema created successfully (all sources and dimensions included)")
+
+    print("✔ Star schema created successfully (all dimensions and fact table included).")
+
 
 
 # =====================================================================================
