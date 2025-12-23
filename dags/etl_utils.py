@@ -825,15 +825,15 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 # STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
 # =====================================================================================
-
 def create_dimensions_and_fact():
     """
     Build all dimensions and the fact table for the star schema.
-    Memory-safe, deterministic, weighted by fatalities.
+    Memory-safe, idempotent, analytically correct, and numpy-safe.
     """
 
     import pandas as pd
     from psycopg2.extras import execute_batch
+    from datetime import datetime
 
     conn = pg_connect()
     cur = conn.cursor()
@@ -844,10 +844,10 @@ def create_dimensions_and_fact():
     tables_to_drop = [
         "fact_accidents",
         "dim_location",
-        "dim_employer",
-        "dim_hazard",
-        "dim_accident_type",
         "dim_industry",
+        "dim_accident_type",
+        "dim_hazard",
+        "dim_employer",
         "dim_date",
         "country_synonym",
         "dim_country",
@@ -860,12 +860,18 @@ def create_dimensions_and_fact():
     # ==================================================
     # HELPERS
     # ==================================================
-    def normalize_text(s):
-        return s.astype(str).str.strip().str.upper()
+    def normalize_text(obj):
+        if isinstance(obj, pd.Series):
+            return obj.astype(str).str.strip().str.upper()
+        elif isinstance(obj, pd.DataFrame):
+            return obj.apply(lambda c: c.astype(str).str.strip().str.upper())
+        return obj
 
-    def drop_empty_rows(df, cols):
-        valid = [c for c in cols if c in df.columns]
-        return df.dropna(how="all", subset=valid) if valid else df
+    def drop_empty_rows(df, key_cols):
+        valid = [c for c in key_cols if c in df.columns]
+        if not valid:
+            return df
+        return df.dropna(how="all", subset=valid)
 
     # ==================================================
     # LOAD CLEAN TABLES
@@ -879,13 +885,12 @@ def create_dimensions_and_fact():
     df_work = drop_empty_rows(df_work, ["country", "accident_date"])
 
     # ==================================================
-    # ORIGINAL DIM LOCATION (COUNTRY ONLY)
+    # ORIGINAL DIM LOCATION
     # ==================================================
     frames = []
-    if "country" in df_aria.columns: frames.append(df_aria[["country"]])
-    if "country" in df_fatal.columns: frames.append(df_fatal[["country"]])
-    if "country" in df_work.columns: frames.append(df_work[["country"]])
-
+    for df in [df_aria, df_fatal, df_work]:
+        if "country" in df.columns:
+            frames.append(df[["country"]])
     df_orig_loc = pd.concat(frames).drop_duplicates()
     df_orig_loc["country"] = normalize_text(df_orig_loc["country"]).fillna("UNKNOWN")
 
@@ -897,7 +902,7 @@ def create_dimensions_and_fact():
     execute_batch(
         cur,
         "INSERT INTO original_dim_location VALUES (%s)",
-        [(c,) for c in df_orig_loc["country"]]
+        [(str(c),) for c in df_orig_loc["country"]]
     )
     conn.commit()
 
@@ -966,7 +971,7 @@ def create_dimensions_and_fact():
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
 
     # ==================================================
-    # DIM DATE (PERMANENT FIX)
+    # DIM DATE
     # ==================================================
     all_dates = pd.concat([
         pd.to_datetime(df_aria.get("incident_date"), errors="coerce"),
@@ -975,12 +980,11 @@ def create_dimensions_and_fact():
     ]).dropna().drop_duplicates().sort_values()
 
     df_dates = pd.DataFrame({"date": all_dates})
-    df_dates["year"] = df_dates["date"].dt.year
-    df_dates["month"] = df_dates["date"].dt.month
-    df_dates["day"] = df_dates["date"].dt.day
-    df_dates["date_id"] = range(1, len(df_dates) + 1)  # integer IDs
+    df_dates["year"] = df_dates["date"].dt.year.astype(int)
+    df_dates["month"] = df_dates["date"].dt.month.astype(int)
+    df_dates["day"] = df_dates["date"].dt.day.astype(int)
+    df_dates["date_id"] = range(1, len(df_dates) + 1)
 
-    cur.execute("DROP TABLE IF EXISTS dim_date;")
     cur.execute("""
         CREATE TABLE dim_date (
             date_id INT PRIMARY KEY,
@@ -992,8 +996,8 @@ def create_dimensions_and_fact():
     """)
     execute_batch(
         cur,
-        "INSERT INTO dim_date (date_id, date, year, month, day) VALUES (%s,%s,%s,%s,%s)",
-        df_dates[["date_id", "date", "year", "month", "day"]].values.tolist()
+        "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s)",
+        [(int(r.date_id), r.date, int(r.year), int(r.month), int(r.day)) for _, r in df_dates.iterrows()]
     )
     conn.commit()
 
@@ -1012,17 +1016,23 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_employer VALUES (0,'UNKNOWN')")
-    execute_batch(cur, "INSERT INTO dim_employer VALUES (%s,%s)", df_emp.values.tolist())
+    execute_batch(
+        cur,
+        "INSERT INTO dim_employer VALUES (%s,%s)",
+        [(int(r.employer_id), str(r.employer)) for _, r in df_emp.iterrows()]
+    )
     conn.commit()
 
     # ==================================================
     # DIM HAZARD
     # ==================================================
     haz_frames = []
-    if "hazard_class" in df_aria: haz_frames.append(df_aria[["hazard_class"]].rename(columns={"hazard_class":"hazard"}))
-    if "hazard_description" in df_fatal: haz_frames.append(df_fatal[["hazard_description"]].rename(columns={"hazard_description":"hazard"}))
-    if "nature" in df_work: haz_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
-
+    if "hazard_class" in df_aria:
+        haz_frames.append(df_aria[["hazard_class"]].rename(columns={"hazard_class":"hazard"}))
+    if "hazard_description" in df_fatal:
+        haz_frames.append(df_fatal[["hazard_description"]].rename(columns={"hazard_description":"hazard"}))
+    if "nature" in df_work:
+        haz_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
     df_haz = pd.concat(haz_frames).dropna().drop_duplicates()
     df_haz["hazard"] = normalize_text(df_haz["hazard"])
     df_haz.insert(0, "hazard_id", range(1, len(df_haz) + 1))
@@ -1034,7 +1044,11 @@ def create_dimensions_and_fact():
         );
     """)
     cur.execute("INSERT INTO dim_hazard VALUES (0,'UNKNOWN')")
-    execute_batch(cur, "INSERT INTO dim_hazard VALUES (%s,%s)", df_haz.values.tolist())
+    execute_batch(
+        cur,
+        "INSERT INTO dim_hazard VALUES (%s,%s)",
+        [(int(r.hazard_id), str(r.hazard)) for _, r in df_haz.iterrows()]
+    )
     conn.commit()
 
     # ==================================================
@@ -1053,33 +1067,29 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # BUILD FACT (weighted fatalities)
+    # BUILD FACT (ONLY FATALITIES)
     # ==================================================
-    def build_fact(df, date_col):
-        df = df.copy()
-        df["country"] = normalize_text(df["country"].fillna("UNKNOWN"))
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.merge(df_dates[["date", "date_id"]], left_on=date_col, right_on="date", how="left")
-        df = df.merge(df_dim_location[["country", "location_id"]], on="country", how="left")
-        df["date_id"] = df["date_id"].fillna(0).astype(int)
-        df["location_id"] = df["location_id"].fillna(0).astype(int)
-        return df[["date_id", "location_id"]]
-
-    # Fatalities weighting
     df_fatal["no_of_fatalities"] = df_fatal["no_of_fatalities"].fillna(1).astype(int).clip(lower=1)
-    df_fatal_fact = build_fact(df_fatal, "date")
+
+    df_fatal_fact = df_fatal.copy()
+    df_fatal_fact["country"] = normalize_text(df_fatal_fact["country"].fillna("UNKNOWN"))
+    df_fatal_fact["date"] = pd.to_datetime(df_fatal_fact["date"], errors="coerce")
+    df_fatal_fact = df_fatal_fact.merge(df_dates[["date","date_id"]], on="date", how="left")
+    df_fatal_fact = df_fatal_fact.merge(df_dim_location[["country","location_id"]], on="country", how="left")
+    df_fatal_fact["date_id"] = df_fatal_fact["date_id"].fillna(0).astype(int)
+    df_fatal_fact["location_id"] = df_fatal_fact["location_id"].fillna(0).astype(int)
 
     for i, r in df_fatal_fact.iterrows():
-        for _ in range(df_fatal.loc[i, "no_of_fatalities"]):
+        for _ in range(int(df_fatal_fact.loc[i, "no_of_fatalities"])):
             cur.execute(
                 "INSERT INTO fact_accidents VALUES (%s,0,%s,0,0,0)",
-                (r.date_id, r.location_id)
+                (int(r.date_id), int(r.location_id))
             )
 
     conn.commit()
     conn.close()
-    print("✔ Star schema created successfully (deterministic, weighted, memory-safe)")
 
+    print("✔ Star schema created successfully (numpy-safe, regression-proof)")
 
 # =====================================================================================
 # STAR SCHEMA TESTS
