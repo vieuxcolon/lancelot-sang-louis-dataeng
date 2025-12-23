@@ -58,10 +58,13 @@ DB_CONFIG = {
     "password": "airflow",
     "ariadb_table": "ariadb",
     "ariadb_clean_table": "ariadb_clean",
+    "ariadb_prep_table": "ariadb_prep",
     "workaccidents_table": "workaccidents",
+    "workaccidents_prep_table": "workaccidents_prep",
     "workaccidents_clean_table": "workaccidents_clean",
     "fatalities_table": "fatalities",
     "fatalities_clean_table": "fatalities_clean",
+    "fatalities_prep_table": "fatalities_prep",
 }
 
 
