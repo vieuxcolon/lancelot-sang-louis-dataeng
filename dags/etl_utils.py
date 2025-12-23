@@ -1175,7 +1175,12 @@ def create_dimensions_and_fact():
 # STAR SCHEMA TESTS
 # =====================================================================================
 
+# ================== TESTS FOR STAR SCHEMA (COUNTRY-ONLY) ==================
+
 def min_test_star_schema():
+    """
+    Minimal test: select top 5 rows from fact_accidents.
+    """
     conn = pg_connect()
 
     query = """
@@ -1199,13 +1204,16 @@ def min_test_star_schema():
 
 
 def full_test_star_schema():
+    """
+    Full test: join fact_accidents with dimensions, country-only version.
+    """
     conn = pg_connect()
 
     sql = """
         SELECT 
             f.date_id, d.date, d.year, d.month,
             f.employer_id, e.employer,
-            f.location_id, l.municipality, l.department, l.country,
+            f.location_id, l.country AS country_name,
             f.hazard_id, h.hazard,
             f.accident_type_id, a.accident_type,
             f.industry_id, i.industry_code
@@ -1225,5 +1233,3 @@ def full_test_star_schema():
     print("\n=== Full Star Schema Test (20 rows) ===")
     print(df)
     return df
-
-
