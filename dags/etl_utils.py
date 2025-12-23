@@ -807,8 +807,7 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 def create_dimensions_and_fact():
     import pandas as pd
     import numpy as np
-    from etl_utils import pg_connect, DB_CONFIG
-
+ 
     conn = pg_connect()
     cur = conn.cursor()
 
