@@ -763,6 +763,37 @@ def create_fatalities_clean():
     load_fatalities_to_postgres()
     print("✔ fatalities_clean loaded into Postgres")
 
+def normalize_country(df, column_name):
+    """
+    Normalize country values in a DataFrame column.
+    Converts None/NaN to 'UNKNOWN', strips whitespace, uppercases,
+    normalizes accents, and maps common synonyms to canonical names.
+    """
+    if column_name not in df.columns:
+        return df
+    
+def normalize_value(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "UNKNOWN"
+    s = str(value).strip().upper()
+    # Normalize accents
+    s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
+    # Map common synonyms
+    if s in {"USA", "US", "UNITED STATES", "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"}:
+        return "USA"
+    if s in {"UK", "UNITED KINGDOM", "ROYAUME-UNI"}:
+        return "UK"
+    if s == "FRANCE":
+        return "FRANCE"
+    if s in {"GERMANY", "ALLEMAGNE"}:
+        return "GERMANY"
+    if s == "CANADA":
+        return "CANADA"
+    return s
+
+df[column_name] = df[column_name].apply(normalize_value)
+return df
+
 def create_ariadb_prep():
     src_table = DB_CONFIG["ariadb_clean_table"]
     dst_table = DB_CONFIG["ariadb_prep_table"]
