@@ -4,10 +4,10 @@
 # the resulting clean datasets include ariadb_clean, workaccidents_clean and fatalities_clean which are loaded into clean database tables
 # =====================================================================================================================================================
 
-# =================== dag_data_clean.py =====================================================================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.models.baseoperator import chain
 from datetime import datetime
 from etl_utils import (
     create_ariadb_clean, create_workaccidents_clean, create_fatalities_clean,
@@ -22,7 +22,9 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    # -------------------- CLEAN TASKS --------------------
+    # -------------------------------
+    # Clean tasks (can run in parallel)
+    # -------------------------------
     t_clean_ariadb = PythonOperator(
         task_id="clean_ariadb",
         python_callable=create_ariadb_clean
@@ -38,7 +40,9 @@ with DAG(
         python_callable=create_fatalities_clean
     )
 
-    # -------------------- PREP TASKS --------------------
+    # -------------------------------
+    # Prep tasks (must wait for clean)
+    # -------------------------------
     t_prep_ariadb = PythonOperator(
         task_id="prep_ariadb",
         python_callable=create_ariadb_prep
@@ -54,21 +58,22 @@ with DAG(
         python_callable=create_fatalities_prep
     )
 
-    # -------------------- DAG TRIGGER --------------------
+    # -------------------------------
+    # Trigger next DAG: star schema
+    # -------------------------------
     trigger_analyze = TriggerDagRunOperator(
         task_id="trigger_data_analyze",
         trigger_dag_id="dag_data_analyze",
         wait_for_completion=True
     )
 
-    # -------------------- DEPENDENCIES --------------------
-    # Clean tasks run in parallel
-    [t_clean_ariadb, t_clean_work, t_clean_fatalities] >> [t_prep_ariadb, t_prep_work, t_prep_fatalities]
-    
-    # Each prep depends only on its corresponding clean
-    t_clean_ariadb >> t_prep_ariadb
-    t_clean_work >> t_prep_work
-    t_clean_fatalities >> t_prep_fatalities
+    # -------------------------------
+    # Set dependencies
+    # -------------------------------
+    # All clean tasks complete before any prep tasks start
+    chain(
+        [t_clean_ariadb, t_clean_work, t_clean_fatalities],
+        [t_prep_ariadb, t_prep_work, t_prep_fatalities],
+        trigger_analyze
+    )
 
-    # Trigger analyze DAG after all prep tasks complete
-    [t_prep_ariadb, t_prep_work, t_prep_fatalities] >> trigger_analyze
