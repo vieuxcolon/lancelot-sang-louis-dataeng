@@ -81,6 +81,18 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
 
+def normalize_country(s):
+        if pd.isna(s):
+            return "UNKNOWN"
+        s = str(s).strip().upper()
+        s = s.replace("É", "E").replace("È", "E")
+        s = s.replace("UNIS", "UNIS")  # defensive
+        if s in {
+            "USA", "US", "UNITED STATES",
+            "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"
+        }:
+            return "USA"
+        return s
 
 def download_all_fatalities():
     """
@@ -597,61 +609,37 @@ def load_fatalities_to_postgres():
 # ------------------------------------------------------------------
 # Master orchestration
 # ------------------------------------------------------------------
+# Helper function
+def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
+    """
+    Normalize country names in the dataframe column to standard names.
+    Currently maps all USA variants to 'USA'.
+    """
+    if col not in df.columns:
+        df[col] = "USA"  # default if column doesn't exist
+        return df
 
-def create_fatalities_clean():
-    print("=== Cleaning fatalities files ===")
-
-    cleaners = [
-        ("fatalities_1.csv", clean_fatalities_1_2),
-        ("fatalities_2.csv", clean_fatalities_1_2),
-        ("fatalities_3.csv", clean_fatalities_3),
-        ("fatalities_4.csv", clean_fatalities_4),
-        ("fatalities_5.csv", clean_fatalities_5),
-        ("fatalities_6.csv", clean_fatalities_6_to_9),
-        ("fatalities_7.csv", clean_fatalities_6_to_9),
-        ("fatalities_8.csv", clean_fatalities_6_to_9),
-        ("fatalities_9.csv", clean_fatalities_6_to_9),
-    ]
-
-    dfs = []
-
-    for fname, fn in cleaners:
-        src = os.path.join(DATA_DIR, fname)
-        dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
-
-        if not os.path.exists(src):
-            print(f"⚠ File not found, skipping: {src}")
-            continue
-
-        rows = fn(src, dst)
-        print(f"✔ {fname} → {rows} rows cleaned")
-        dfs.append(pd.read_csv(dst))
-
-    if not dfs:
-        raise RuntimeError("No fatalities files were cleaned")
-
-    final_df = pd.concat(dfs, ignore_index=True)
-    final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    final_df.to_csv(final_path, index=False)
-
-    print(f"✔ Final merge written: {final_path} ({len(final_df)} rows)")
-
-    load_fatalities_to_postgres()
-
-    print("✔ fatalities_clean loaded into Postgres")
-    return None
+    df[col] = df[col].astype(str).str.strip().str.upper()
+    country_map = {
+        "USA": "USA",
+        "US": "USA",
+        "UNITED STATES": "USA",
+        "UNITED STATES OF AMERICA": "USA",
+        "ETATS-UNIS": "USA",
+        "ETATS UNIS": "USA",
+        # add more mappings if needed
+    }
+    df[col] = df[col].replace(country_map)
+    return df
 
 
-# =====================================================================================
-# CREATE ARIADB CLEAN
-# =====================================================================================
-
-
+# 1️⃣ ARIADB
 def create_ariadb_clean():
     src_table = DB_CONFIG["ariadb_table"]
     dst_table = DB_CONFIG["ariadb_clean_table"]
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
     col_map = {
         "numéro_aria": "aria_id",
         "titre": "title",
@@ -670,47 +658,37 @@ def create_ariadb_clean():
     df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
 
     if "incident_date" in df.columns:
-        df["incident_date"] = pd.to_datetime(
-            df["incident_date"], errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
+        df["incident_date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     if "aria_id" in df.columns:
         df.drop_duplicates(subset=["aria_id"], inplace=True)
 
+    # Normalize country
+    df = normalize_country(df, "country")
+
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
-
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
     insert_sql = f"""
-        INSERT INTO "{dst_table}"
-        ({", ".join([f'"{c}"' for c in df.columns])})
+        INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
     """
-
     for _, row in df.iterrows():
         cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
 
     conn.commit()
     conn.close()
-
     print(f"✔ Created ariadb_clean ({len(df)} rows)")
 
 
-# =====================================================================================
-# CREATE WORKACCIDENTS CLEAN
-# =====================================================================================
-
-
+# 2️⃣ WORKACCIDENTS
 def create_workaccidents_clean():
     src_table = DB_CONFIG["workaccidents_table"]
-    dst_table = "workaccidents_clean"
-
+    dst_table = DB_CONFIG["workaccidents_clean_table"]
     conn = pg_connect()
-
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
     if "final_narrative" in df.columns:
@@ -718,66 +696,95 @@ def create_workaccidents_clean():
 
     date_col = "eventdate" if "eventdate" in df.columns else None
     if date_col:
-        df["accident_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime(
-            "%Y-%m-%d"
-        )
+        df["accident_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
     else:
         df["accident_date"] = None
 
-    df["country"] = "USA"
+    # Normalize country
+    df = normalize_country(df, "country")
 
     selected_columns = [
-        "id",
-        "upa",
-        "accident_date",
-        "employer",
-        "address1",
-        "address2",
-        "city",
-        "state",
-        "zip",
-        "latitude",
-        "longitude",
-        "primary_naics",
-        "hospitalized",
-        "amputation",
-        "loss_of_eye",
-        "inspection",
-        "nature",
-        "naturetitle",
-        "part_of_body",
-        "part_of_body_title",
-        "event",
-        "eventtitle",
-        "source",
-        "sourcetitle",
-        "secondary_source",
-        "secondary_source_title",
-        "federalstate",
-        "country",
+        "id", "upa", "accident_date", "employer", "address1", "address2",
+        "city", "state", "zip", "latitude", "longitude", "primary_naics",
+        "hospitalized", "amputation", "loss_of_eye", "inspection", "nature",
+        "naturetitle", "part_of_body", "part_of_body_title", "event",
+        "eventtitle", "source", "sourcetitle", "secondary_source",
+        "secondary_source_title", "federalstate", "country",
     ]
-
     df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
 
     cursor = conn.cursor()
-    cursor.execute('DROP TABLE IF EXISTS "workaccidents_clean"')
-
+    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df_clean.columns])
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
 
     insert_sql = f"""
-        INSERT INTO "{dst_table}"
-        ({", ".join([f'"{c}"' for c in df_clean.columns])})
+        INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df_clean.columns])})
         VALUES ({", ".join(["%s"] * len(df_clean.columns))})
     """
-
     for _, row in df_clean.iterrows():
         cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
 
     conn.commit()
     conn.close()
-
     print(f"✔ Created workaccidents_clean ({len(df_clean)} rows)")
+
+
+# 3️⃣ FATALITIES
+def create_fatalities_clean():
+    print("=== Cleaning fatalities files ===")
+
+    cleaners = [
+        ("fatalities_1.csv", clean_fatalities_1_2),
+        ("fatalities_2.csv", clean_fatalities_1_2),
+        ("fatalities_3.csv", clean_fatalities_3),
+        ("fatalities_4.csv", clean_fatalities_4),
+        ("fatalities_5.csv", clean_fatalities_5),
+        ("fatalities_6.csv", clean_fatalities_6_to_9),
+        ("fatalities_7.csv", clean_fatalities_6_to_9),
+        ("fatalities_8.csv", clean_fatalities_6_to_9),
+        ("fatalities_9.csv", clean_fatalities_6_to_9),
+    ]
+
+    dfs = []
+    for fname, fn in cleaners:
+        src = os.path.join(DATA_DIR, fname)
+        dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
+        if not os.path.exists(src):
+            print(f"⚠ File not found, skipping: {src}")
+            continue
+        rows = fn(src, dst)
+        print(f"✔ {fname} → {rows} rows cleaned")
+        dfs.append(pd.read_csv(dst))
+
+    if not dfs:
+        raise RuntimeError("No fatalities files were cleaned")
+
+    final_df = pd.concat(dfs, ignore_index=True)
+
+    # Normalize country
+    final_df = normalize_country(final_df, "country")
+
+    final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    final_df.to_csv(final_path, index=False)
+    print(f"✔ Final merge written: {final_path} ({len(final_df)} rows)")
+
+    load_fatalities_to_postgres()
+    print("✔ fatalities_clean loaded into Postgres")
+
+
+
+# =====================================================================================
+# CREATE ARIADB CLEAN
+# =====================================================================================
+
+
+
+
+# =====================================================================================
+# CREATE WORKACCIDENTS CLEAN
+# =====================================================================================
+
 
 
 # =====================================================================================
@@ -825,10 +832,11 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 # STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
 # =====================================================================================
-
 def create_dimensions_and_fact():
     import pandas as pd
     import numpy as np
+    from etl_utils import pg_connect, DB_CONFIG
+
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -842,6 +850,7 @@ def create_dimensions_and_fact():
             return obj.apply(lambda c: c.astype(str).str.strip().str.upper())
         return obj
 
+    
     def drop_empty_rows(df, key_cols):
         valid = [c for c in key_cols if c in df.columns]
         if not valid:
@@ -872,7 +881,11 @@ def create_dimensions_and_fact():
     # ==================================================
     df_aria = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
     df_fatal = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["fatalities_clean_table"]}"', conn)
-    df_work = pd.read_sql("SELECT * FROM workaccidents_clean", conn)
+    df_work = pd.read_sql('SELECT * FROM "workaccidents_clean"', conn)
+
+    for df in [df_aria, df_fatal, df_work]:
+        if "country" in df.columns:
+            df["country"] = df["country"].apply(normalize_country)
 
     df_aria = drop_empty_rows(df_aria, ["municipality", "department", "country", "incident_date"])
     df_fatal = drop_empty_rows(df_fatal, ["city", "state", "country", "date_of_incident"])
@@ -885,15 +898,21 @@ def create_dimensions_and_fact():
     if all(c in df_aria.columns for c in ["municipality", "department", "country"]):
         frames.append(df_aria[["municipality", "department", "country"]])
     if all(c in df_fatal.columns for c in ["city", "state", "country"]):
-        frames.append(df_fatal[["city", "state", "country"]].rename(columns={"city": "municipality", "state": "department"}))
+        frames.append(
+            df_fatal[["city", "state", "country"]]
+            .rename(columns={"city": "municipality", "state": "department"})
+        )
     if all(c in df_work.columns for c in ["city", "state", "country"]):
-        frames.append(df_work[["city", "state", "country"]].rename(columns={"city": "municipality", "state": "department"}))
-    df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame(columns=["municipality", "department", "country"])
-    for col in ["municipality", "department", "country"]:
-        df_orig_loc[col] = df_orig_loc[col].fillna("UNKNOWN")
+        frames.append(
+            df_work[["city", "state", "country"]]
+            .rename(columns={"city": "municipality", "state": "department"})
+        )
+
+    df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates()
+    df_orig_loc = normalize_text(df_orig_loc.fillna("UNKNOWN"))
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS original_dim_location (
+        CREATE TABLE original_dim_location (
             municipality TEXT,
             department TEXT,
             country TEXT
@@ -902,7 +921,7 @@ def create_dimensions_and_fact():
     for _, r in df_orig_loc.iterrows():
         cur.execute(
             "INSERT INTO original_dim_location VALUES (%s,%s,%s)",
-            (str(r.municipality), str(r.department), str(r.country))
+            (r.municipality, r.department, r.country)
         )
     conn.commit()
 
@@ -910,7 +929,7 @@ def create_dimensions_and_fact():
     # DIM COUNTRY + SYNONYMS
     # ==================================================
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_country (
+        CREATE TABLE dim_country (
             country_id INT PRIMARY KEY,
             country_name TEXT UNIQUE,
             country_code TEXT
@@ -918,37 +937,28 @@ def create_dimensions_and_fact():
     """)
     cur.execute("""
         INSERT INTO dim_country VALUES
-        (1,'United States','US'),(2,'United Kingdom','GB'),(3,'France','FR'),
-        (4,'Canada','CA'),(5,'Germany','DE'),(6,'Italy','IT'),
-        (7,'Spain','ES'),(8,'Switzerland','CH'),(9,'Netherlands','NL'),
-        (10,'Belgium','BE'),(11,'China','CN'),(12,'Russia','RU'),
-        (13,'Japan','JP'),(14,'India','IN'),(15,'Brazil','BR'),
-        (16,'Australia','AU'),(17,'South Africa','ZA'),(18,'Mexico','MX'),
-        (19,'UNKNOWN','XX')
-        ON CONFLICT (country_id) DO NOTHING;
+        (1,'United States','US'),
+        (2,'United Kingdom','GB'),
+        (3,'France','FR'),
+        (4,'Germany','DE'),
+        (5,'Canada','CA'),
+        (6,'UNKNOWN','XX');
     """)
-    conn.commit()
-
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS country_synonym (
+        CREATE TABLE country_synonym (
             synonym TEXT PRIMARY KEY,
             country_id INT REFERENCES dim_country(country_id)
         );
     """)
     cur.execute("""
         INSERT INTO country_synonym VALUES
-        ('USA',1),('US',1),('UNITED STATES',1),('ETATS-UNIS',1),
+        ('USA',1),('US',1),('UNITED STATES',1),
+        ('ETATS-UNIS',1),('ETATS UNIS',1),
         ('UK',2),('UNITED KINGDOM',2),('ROYAUME-UNI',2),
-        ('FRANCE',3),('CANADA',4),
-        ('GERMANY',5),('ALLEMAGNE',5),
-        ('ITALY',6),('ITALIE',6),
-        ('SPAIN',7),('ESPAGNE',7),
-        ('SWITZERLAND',8),('SUISSE',8),
-        ('NETHERLANDS',9),('PAYS-BAS',9),
-        ('BELGIUM',10),('BELGIQUE',10),
-        ('CHINA',11),('CHINE',11),
-        ('RUSSIA',12),('RUSSIE',12)
-        ON CONFLICT (synonym) DO NOTHING;
+        ('FRANCE',3),
+        ('GERMANY',4),('ALLEMAGNE',4),
+        ('CANADA',5),
+        ('UNKNOWN',6);
     """)
     conn.commit()
 
@@ -956,7 +966,7 @@ def create_dimensions_and_fact():
     # DIM LOCATION
     # ==================================================
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_location (
+        CREATE TABLE dim_location (
             location_id INT PRIMARY KEY,
             municipality TEXT,
             department TEXT,
@@ -967,234 +977,79 @@ def create_dimensions_and_fact():
     cur.execute("""
         INSERT INTO dim_location
         SELECT
-            ROW_NUMBER() OVER (ORDER BY m,d,c_id)::INT AS location_id,
+            ROW_NUMBER() OVER (ORDER BY m,d,c_id)::INT,
             m,d,c,c_id
         FROM (
             SELECT DISTINCT
-                UPPER(TRIM(o.municipality)) AS m,
-                UPPER(TRIM(o.department)) AS d,
-                UPPER(TRIM(o.country)) AS c,
-                COALESCE(cs.country_id,19) AS c_id
+                municipality AS m,
+                department AS d,
+                country AS c,
+                COALESCE(cs.country_id,6) AS c_id
             FROM original_dim_location o
             LEFT JOIN country_synonym cs
-                ON UPPER(TRIM(o.country)) = cs.synonym
-        ) t
-        ON CONFLICT (location_id) DO NOTHING;
+                ON o.country = cs.synonym
+        ) t;
     """)
     conn.commit()
+
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
 
     # ==================================================
-    # DIM DATE
+    # BUILD FACT (USA SAFE)
     # ==================================================
-    all_dates = pd.concat([
-        pd.to_datetime(df_aria.get("incident_date"), errors="coerce"),
-        pd.to_datetime(df_fatal.get("date_of_incident"), errors="coerce"),
-        pd.to_datetime(df_work.get("accident_date"), errors="coerce")
-    ]).dropna().drop_duplicates().sort_values()
-
-    df_dates = pd.DataFrame({"date": all_dates})
-    df_dates["year"] = df_dates["date"].dt.year
-    df_dates["month"] = df_dates["date"].dt.month
-    df_dates["day"] = df_dates["date"].dt.day
-    df_dates["quarter"] = df_dates["date"].dt.quarter
-    df_dates["date_id"] = range(1, len(df_dates)+1)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_date (
-            date_id INT PRIMARY KEY,
-            date DATE,
-            year INT,
-            month INT,
-            day INT,
-            quarter INT
-        );
-    """)
-    for _, r in df_dates.iterrows():
-        cur.execute(
-            "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (date_id) DO NOTHING",
-            (int(r.date_id), r.date.date(), int(r.year), int(r.month), int(r.day), int(r.quarter))
+    def build_fact(df, date_col):
+        df2 = df.copy()
+        df2[["municipality","department","country"]] = (
+            normalize_text(df2[["municipality","department","country"]].fillna("UNKNOWN"))
         )
-    conn.commit()
 
-    # ==================================================
-    # DIM EMPLOYER
-    # ==================================================
-    emp_frames = [df[["employer"]] for df in [df_aria, df_fatal, df_work] if "employer" in df.columns]
-    df_emp = pd.concat(emp_frames, ignore_index=True).dropna().drop_duplicates() if emp_frames else pd.DataFrame(columns=["employer"])
-    if not df_emp.empty:
-        df_emp["employer"] = normalize_text(df_emp["employer"])
-        df_emp.insert(0, "employer_id", range(1, len(df_emp)+1))
+        df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
+        df2 = df2.merge(
+            df_dates[["date","date_id"]],
+            left_on=date_col, right_on="date", how="left"
+        ).drop(columns=["date"], errors="ignore")
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_employer (
-            employer_id INT PRIMARY KEY,
-            employer TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_employer VALUES (0,'UNKNOWN') ON CONFLICT (employer_id) DO NOTHING")
-    for _, r in df_emp.iterrows():
-        cur.execute(
-            "INSERT INTO dim_employer VALUES (%s,%s) ON CONFLICT (employer_id) DO NOTHING",
-            (int(r.employer_id), str(r.employer))
+        df2 = df2.merge(
+            df_dim_location,
+            on=["municipality","department","country"],
+            how="left"
         )
-    conn.commit()
 
-    # ==================================================
-    # DIM HAZARD
-    # ==================================================
-    hazard_frames = []
-    if "hazard_class" in df_aria.columns:
-        hazard_frames.append(df_aria[["hazard_class"]].rename(columns={"hazard_class":"hazard"}))
-    if "hazard_description" in df_fatal.columns:
-        hazard_frames.append(df_fatal[["hazard_description"]].rename(columns={"hazard_description":"hazard"}))
-    if "nature" in df_work.columns:
-        hazard_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
-    df_haz = pd.concat(hazard_frames, ignore_index=True).dropna().drop_duplicates() if hazard_frames else pd.DataFrame(columns=["hazard"])
-    if not df_haz.empty:
-        df_haz["hazard"] = normalize_text(df_haz["hazard"])
-        df_haz.insert(0, "hazard_id", range(1, len(df_haz)+1))
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_hazard (
-            hazard_id INT PRIMARY KEY,
-            hazard TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_hazard VALUES (0,'UNKNOWN') ON CONFLICT (hazard_id) DO NOTHING")
-    for _, r in df_haz.iterrows():
-        cur.execute(
-            "INSERT INTO dim_hazard VALUES (%s,%s) ON CONFLICT (hazard_id) DO NOTHING",
-            (int(r.hazard_id), str(r.hazard))
+        df2[["date_id","location_id"]] = (
+            df2[["date_id","location_id"]].fillna(0).astype(int)
         )
-    conn.commit()
 
-    # ==================================================
-    # DIM ACCIDENT TYPE
-    # ==================================================
-    acc_frames = []
-    if "accident_type" in df_fatal.columns:
-        acc_frames.append(df_fatal[["accident_type"]])
-    if "naturetitle" in df_work.columns:
-        acc_frames.append(df_work[["naturetitle"]].rename(columns={"naturetitle":"accident_type"}))
-    if "accident_type" in df_aria.columns:
-        acc_frames.append(df_aria[["accident_type"]])
-    df_act = pd.concat(acc_frames, ignore_index=True).dropna().drop_duplicates() if acc_frames else pd.DataFrame(columns=["accident_type"])
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_accident_type (
-            accident_type_id INT PRIMARY KEY,
-            accident_type TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_accident_type VALUES (0,'UNKNOWN') ON CONFLICT (accident_type_id) DO NOTHING")
-    if not df_act.empty:
-        df_act["accident_type"] = normalize_text(df_act["accident_type"])
-        df_act.insert(0,"accident_type_id", range(1,len(df_act)+1))
-        for _, r in df_act.iterrows():
-            cur.execute(
-                "INSERT INTO dim_accident_type VALUES (%s,%s) ON CONFLICT (accident_type_id) DO NOTHING",
-                (int(r.accident_type_id), str(r.accident_type))
-            )
-    conn.commit()
-
-    # ==================================================
-    # DIM INDUSTRY
-    # ==================================================
-    df_ind = df_aria[["industry_code"]].dropna().drop_duplicates() if "industry_code" in df_aria.columns else pd.DataFrame(columns=["industry_code"])
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_industry (
-            industry_id INT PRIMARY KEY,
-            industry_code TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_industry VALUES (0,'UNKNOWN') ON CONFLICT (industry_id) DO NOTHING")
-    if not df_ind.empty:
-        df_ind["industry_code"] = normalize_text(df_ind["industry_code"])
-        df_ind.insert(0,"industry_id", range(1,len(df_ind)+1))
-        for _, r in df_ind.iterrows():
-            cur.execute(
-                "INSERT INTO dim_industry VALUES (%s,%s) ON CONFLICT (industry_id) DO NOTHING",
-                (int(r.industry_id), str(r.industry_code))
-            )
-    conn.commit()
+        return df2[["date_id","location_id"]]
 
     # ==================================================
     # FACT TABLE
     # ==================================================
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS fact_accidents (
+        CREATE TABLE fact_accidents (
             date_id INT,
-            employer_id INT,
-            location_id INT,
-            hazard_id INT,
-            accident_type_id INT,
-            industry_id INT
+            location_id INT
         );
     """)
-    conn.commit()
 
-    # ==================================================
-    # BUILD FACT FUNCTION
-    # ==================================================
-    def build_fact(df, date_col, employer_col, hazard_col, acc_type_col, industry_col=None):
-        df2 = df.copy()
-        for col in ["municipality","department","country"]:
-            if col not in df2.columns:
-                df2[col] = "UNKNOWN"
-        df2[["municipality","department","country"]] = normalize_text(df2[["municipality","department","country"]].fillna("UNKNOWN"))
-        # date
-        if date_col in df2.columns:
-            df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
-            df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
-            df2.drop(columns=["date"], inplace=True, errors="ignore")
-        else:
-            df2["date_id"] = 0
-        # location
-        df2 = df2.merge(df_dim_location[["municipality","department","country","location_id"]], on=["municipality","department","country"], how="left")
-        # employer
-        if employer_col in df2.columns:
-            df2[employer_col] = normalize_text(df2[employer_col])
-            df2 = df2.merge(df_emp[["employer","employer_id"]], left_on=employer_col, right_on="employer", how="left")
-        # hazard
-        if hazard_col in df2.columns:
-            df2[hazard_col] = normalize_text(df2[hazard_col])
-            df2 = df2.merge(df_haz[["hazard","hazard_id"]], left_on=hazard_col, right_on="hazard", how="left")
-        # accident_type
-        if acc_type_col and acc_type_col in df2.columns:
-            df2[acc_type_col] = normalize_text(df2[acc_type_col])
-            df2 = df2.merge(df_act[["accident_type","accident_type_id"]], left_on=acc_type_col, right_on="accident_type", how="left")
-        # industry
-        if industry_col and industry_col in df2.columns:
-            df2[industry_col] = normalize_text(df2[industry_col])
-            df2 = df2.merge(df_ind[["industry_code","industry_id"]], left_on=industry_col, right_on="industry_code", how="left")
-        # fill missing
-        for col in ["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]:
-            if col not in df2.columns:
-                df2[col] = 0
-            df2[col] = df2[col].fillna(0).astype(int)
-        return df2[["date_id","employer_id","location_id","hazard_id","accident_type_id","industry_id"]]
+    df_dates = pd.read_sql("SELECT * FROM dim_date", conn)
 
-    # ==================================================
-    # BUILD FACT FROM ALL SOURCES
-    # ==================================================
     df_fact = pd.concat([
-        build_fact(df_aria, "incident_date", "employer", "hazard_class", None, "industry_code"),
-        build_fact(df_fatal, "date_of_incident", "employer", "hazard_description", "accident_type"),
-        build_fact(df_work, "accident_date", "employer", "nature", "naturetitle"),
+        build_fact(df_aria, "incident_date"),
+        build_fact(df_fatal, "date_of_incident"),
+        build_fact(df_work, "accident_date"),
     ], ignore_index=True)
-
-    df_fact = df_fact[(df_fact["date_id"] != 0) | (df_fact["location_id"] != 0)]
 
     for _, r in df_fact.iterrows():
         cur.execute(
-            "INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s,%s)",
-            tuple(int(x) for x in r)
+            "INSERT INTO fact_accidents VALUES (%s,%s)",
+            (int(r.date_id), int(r.location_id))
         )
 
     conn.commit()
     conn.close()
 
-    print("✔ Star schema created successfully (all sources and dimensions included, regression-proof)")
+    print("✔ Star schema created successfully (USA-normalized, synonym-safe, regression-proof)")
+
 
 
 # =====================================================================================
