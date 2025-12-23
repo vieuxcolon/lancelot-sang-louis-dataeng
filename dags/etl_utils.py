@@ -1037,26 +1037,20 @@ def create_dimensions_and_fact():
     print("✔ Star schema created successfully (all dims recreated, USA-normalized, synonym-safe)")
 
 # =====================================================================================
-# STAR SCHEMA TESTS
+# STAR SCHEMA TESTS — UPDATED FOR CURRENT ETL
 # =====================================================================================
-
-# ================== TESTS FOR STAR SCHEMA (COUNTRY-ONLY) ==================
 
 def min_test_star_schema():
     """
-    Minimal test: select top 5 rows from fact_accidents.
+    Minimal test: select top 5 rows from fact_accidents (only existing columns).
     """
     conn = pg_connect()
 
     query = """
         SELECT 
-            f.date_id,
-            f.employer_id,
-            f.location_id,
-            f.hazard_id,
-            f.accident_type_id,
-            f.industry_id
-        FROM fact_accidents f
+            date_id,
+            location_id
+        FROM fact_accidents
         LIMIT 5;
     """
 
@@ -1070,25 +1064,18 @@ def min_test_star_schema():
 
 def full_test_star_schema():
     """
-    Full test: join fact_accidents with dimensions, country-only version.
+    Full test: join fact_accidents with available dimensions (country-only version).
+    Only includes dim_date and dim_location which exist currently.
     """
     conn = pg_connect()
 
     sql = """
         SELECT 
             f.date_id, d.date, d.year, d.month,
-            f.employer_id, e.employer,
-            f.location_id, l.country AS country_name,
-            f.hazard_id, h.hazard,
-            f.accident_type_id, a.accident_type,
-            f.industry_id, i.industry_code
+            f.location_id, l.country AS country_name
         FROM fact_accidents f
         LEFT JOIN dim_date d ON f.date_id = d.date_id
-        LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
         LEFT JOIN dim_location l ON f.location_id = l.location_id
-        LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
-        LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-        LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
         LIMIT 20;
     """
 
