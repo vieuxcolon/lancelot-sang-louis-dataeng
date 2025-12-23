@@ -763,6 +763,322 @@ def create_fatalities_clean():
     load_fatalities_to_postgres()
     print("✔ fatalities_clean loaded into Postgres")
 
+def create_ariadb_prep():
+    """
+    Prepare ARIADB data for star schema.
+    - Unifies date column
+    - Normalizes country
+    - Adds fatality flag
+    - Drops analytically empty rows
+    """
+    src_table = DB_CONFIG["ariadb_clean_table"]
+    dst_table = DB_CONFIG["ariadb_prep_table"]
+
+    conn = pg_connect()
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    # --------------------------------------------------
+    # Unified date column
+    # --------------------------------------------------
+    df["date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # --------------------------------------------------
+    # Normalize country
+    # --------------------------------------------------
+    df = normalize_country(df, "country")
+
+    # --------------------------------------------------
+    # Fatality flag
+    # Rule: accident_type not null => fatality = 1
+    # --------------------------------------------------
+    df["fatality"] = df["accident_type"].apply(
+        lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
+    )
+
+    # --------------------------------------------------
+    # Drop analytically useless rows
+    # --------------------------------------------------
+    key_cols = ["date", "country", "department", "municipality", "industry_code"]
+    df = df.dropna(how="all", subset=key_cols)
+
+    # --------------------------------------------------
+    # Select prep columns (do not over-prune)
+    # --------------------------------------------------
+    df_prep = df[
+        [
+            "aria_id",
+            "date",
+            "title",
+            "publication_type",
+            "industry_code",
+            "country",
+            "department",
+            "municipality",
+            "accident_type",
+            "event_type",
+            "hazard_class",
+            "fatality"
+        ]
+    ].copy()
+
+    # --------------------------------------------------
+    # Create prep table
+    # --------------------------------------------------
+    cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    cur.execute(f"""
+        CREATE TABLE "{dst_table}" (
+            aria_id TEXT PRIMARY KEY,
+            date TEXT,
+            title TEXT,
+            publication_type TEXT,
+            industry_code TEXT,
+            country TEXT,
+            department TEXT,
+            municipality TEXT,
+            accident_type TEXT,
+            event_type TEXT,
+            hazard_class TEXT,
+            fatality INT
+        );
+    """)
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}" (
+            aria_id, date, title, publication_type,
+            industry_code, country, department, municipality,
+            accident_type, event_type, hazard_class, fatality
+        )
+        VALUES ({", ".join(["%s"]*12)})
+    """
+
+    for _, r in df_prep.iterrows():
+        cur.execute(insert_sql, [
+            r.aria_id,
+            r.date,
+            r.title,
+            r.publication_type,
+            r.industry_code,
+            r.country,
+            r.department,
+            r.municipality,
+            r.accident_type,
+            r.event_type,
+            r.hazard_class,
+            int(r.fatality)
+        ])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created ariadb_prep ({len(df_prep)} rows)")
+
+def create_workaccidents_prep():
+    """
+    Prepare workaccidents data for star schema.
+    - Unifies date column
+    - Normalizes country
+    - Adds fatality flag
+    - Drops analytically empty rows
+    """
+
+    src_table = DB_CONFIG["workaccidents_clean_table"]
+    dst_table = DB_CONFIG["workaccidents_prep_table"]
+
+    conn = pg_connect()
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    # --------------------------------------------------
+    # Unified date column
+    # --------------------------------------------------
+    df["date"] = pd.to_datetime(df["accident_date"], errors="coerce") \
+                   .dt.strftime("%Y-%m-%d")
+
+    # --------------------------------------------------
+    # Normalize country
+    # --------------------------------------------------
+    df = normalize_country(df, "country")
+
+    # --------------------------------------------------
+    # Fatality flag
+    # Rule: naturetitle not null => fatality = 1
+    # --------------------------------------------------
+    df["fatality"] = df["naturetitle"].apply(
+        lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
+    )
+
+    # --------------------------------------------------
+    # Drop analytically useless rows
+    # --------------------------------------------------
+    key_cols = ["date", "country", "city", "employer", "primary_naics"]
+    df = df.dropna(how="all", subset=key_cols)
+
+    # --------------------------------------------------
+    # Select prep columns (do NOT over-prune)
+    # --------------------------------------------------
+    df_prep = df[
+        [
+            "id",
+            "date",
+            "country",
+            "state",
+            "city",
+            "employer",
+            "primary_naics",
+            "naturetitle",
+            "eventtitle",
+            "sourcetitle",
+            "secondary_source_title",
+            "fatality"
+        ]
+    ].copy()
+
+    # --------------------------------------------------
+    # Create prep table
+    # --------------------------------------------------
+    cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    cur.execute(f"""
+        CREATE TABLE "{dst_table}" (
+            id TEXT,
+            date TEXT,
+            country TEXT,
+            state TEXT,
+            city TEXT,
+            employer TEXT,
+            primary_naics TEXT,
+            naturetitle TEXT,
+            eventtitle TEXT,
+            sourcetitle TEXT,
+            secondary_source_title TEXT,
+            fatality INT
+        );
+    """)
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}" (
+            id, date, country, state, city, employer,
+            primary_naics, naturetitle, eventtitle,
+            sourcetitle, secondary_source_title, fatality
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    """
+
+    for _, r in df_prep.iterrows():
+        cur.execute(insert_sql, [
+            r.id,
+            r.date,
+            r.country,
+            r.state,
+            r.city,
+            r.employer,
+            r.primary_naics,
+            r.naturetitle,
+            r.eventtitle,
+            r.sourcetitle,
+            r.secondary_source_title,
+            int(r.fatality)
+        ])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created workaccidents_prep ({len(df_prep)} rows)")
+
+def create_fatalities_prep():
+    """
+    Prepare fatalities data for star schema consumption.
+    Enforces:
+    - unified date column (TEXT, YYYY-MM-DD)
+    - normalized country
+    - fatality flag
+    - removal of empty / useless rows
+    """
+
+    src_table = DB_CONFIG["fatalities_clean_table"]
+    dst_table = DB_CONFIG["fatalities_prep_table"]
+
+    conn = pg_connect()
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+
+    # --------------------------------------------------
+    # Ensure required columns exist
+    # --------------------------------------------------
+    required_cols = ["fatality_id", "date", "country", "no_of_fatalities"]
+    for c in required_cols:
+        if c not in df.columns:
+            df[c] = None
+
+    # --------------------------------------------------
+    # Normalize date (keep as TEXT, analytics-safe)
+    # --------------------------------------------------
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # --------------------------------------------------
+    # Normalize country (DF-based version)
+    # --------------------------------------------------
+    df = normalize_country(df, "country")
+
+    # --------------------------------------------------
+    # Fatality flag
+    # Rule: if no_of_fatalities > 0 → fatality = 1
+    # --------------------------------------------------
+    df["fatality"] = df["no_of_fatalities"].apply(
+        lambda x: 1 if pd.notna(x) and str(x).isdigit() and int(x) > 0 else 0
+    )
+
+    # --------------------------------------------------
+    # Drop useless rows
+    # Rule:
+    # - drop rows where date AND country are null
+    # --------------------------------------------------
+    df = df.dropna(how="all", subset=["date", "country"])
+
+    # --------------------------------------------------
+    # Final column selection (prep contract)
+    # --------------------------------------------------
+    df_prep = df[
+        ["fatality_id", "date", "country", "fatality", "no_of_fatalities"]
+    ].copy()
+
+    # --------------------------------------------------
+    # Create prep table
+    # --------------------------------------------------
+    cur = conn.cursor()
+    cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    cur.execute(f"""
+        CREATE TABLE "{dst_table}" (
+            fatality_id TEXT,
+            date TEXT,
+            country TEXT,
+            fatality INT,
+            no_of_fatalities TEXT
+        );
+    """)
+
+    insert_sql = f"""
+        INSERT INTO "{dst_table}"
+        (fatality_id, date, country, fatality, no_of_fatalities)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+
+    for _, r in df_prep.iterrows():
+        cur.execute(insert_sql, [
+            r.fatality_id,
+            r.date,
+            r.country,
+            int(r.fatality),
+            r.no_of_fatalities,
+        ])
+
+    conn.commit()
+    conn.close()
+
+    print(f"✔ Created fatalities_prep ({len(df_prep)} rows)")
+
 # =====================================================================================
 # DATABASE PROFILING
 # =====================================================================================
