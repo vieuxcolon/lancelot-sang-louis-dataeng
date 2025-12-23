@@ -4,17 +4,17 @@
 # such as downloading data, unzipping data, and loading it into a PostgreSQL database
 # ===========================================================================================================
 
-# dag_data_fetch.py
-
+# =================== dag_data_fetch.py ====================================================================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
 from etl_utils import (
     download_csv, download_all_fatalities, download_and_extract_zip,
-    DB_CONFIG, CSV_URL, DATA_DIR, create_fatalities_clean, load_to_postgres
+    load_to_postgres, DB_CONFIG, CSV_URL, DATA_DIR
 )
 
+# -------------------- TASK FUNCTIONS --------------------
 def task_load_ariadb():
     csv_text = download_csv(CSV_URL, "ariadb.csv")
     load_to_postgres(csv_text, table_name=DB_CONFIG["ariadb_table"], skiprows=7, sep=";")
@@ -24,14 +24,11 @@ def task_download_fatalities():
     for f in files:
         print(f"Downloaded {f}")
 
-def task_create_fatalities_clean():
-    df_clean = create_fatalities_clean()  # loads table into Postgres internally
-    print("✔ fatalities_clean table created in Postgres.")
-
 def task_load_workaccidents():
     csv_text = download_and_extract_zip()
     load_to_postgres(csv_text, table_name=DB_CONFIG["workaccidents_table"], sep=",")
 
+# -------------------- DAG DEFINITION --------------------
 with DAG(
     dag_id="dag_data_fetch",
     start_date=datetime(2025, 1, 1),
@@ -40,17 +37,10 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    # Parallel start of safe tasks
+    # Load raw datasets (parallel)
     t1_load_ariadb = PythonOperator(task_id="load_ariadb", python_callable=task_load_ariadb)
     t2_download_fatalities = PythonOperator(task_id="download_fatalities", python_callable=task_download_fatalities)
-    t4_load_workaccidents = PythonOperator(task_id="load_workaccidents", python_callable=task_load_workaccidents)
-
-    # New single fatalities_clean task
-    t3_fatalities_clean = PythonOperator(task_id="create_fatalities_clean", python_callable=task_create_fatalities_clean)
-
-    # Task dependencies
-    [t1_load_ariadb, t2_download_fatalities] >> t3_fatalities_clean
-    t3_fatalities_clean >> t4_load_workaccidents
+    t3_load_workaccidents = PythonOperator(task_id="load_workaccidents", python_callable=task_load_workaccidents)
 
     # Trigger next DAG: dag_data_clean synchronously
     trigger_clean = TriggerDagRunOperator(
@@ -58,4 +48,7 @@ with DAG(
         trigger_dag_id="dag_data_clean",
         wait_for_completion=True
     )
-    t4_load_workaccidents >> trigger_clean
+
+    # -------------------- DEPENDENCIES --------------------
+    # All fetch tasks can run in parallel before triggering the clean DAG
+    [t1_load_ariadb, t2_download_fatalities, t3_load_workaccidents] >> trigger_clean
