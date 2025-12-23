@@ -81,18 +81,33 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
 
-def normalize_country(s):
-        if pd.isna(s):
-            return "UNKNOWN"
-        s = str(s).strip().upper()
-        s = s.replace("É", "E").replace("È", "E")
-        s = s.replace("UNIS", "UNIS")  # defensive
-        if s in {
-            "USA", "US", "UNITED STATES",
-            "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"
-        }:
-            return "USA"
-        return s
+def normalize_country(obj):
+    # Series → vectorized apply
+    if isinstance(obj, pd.Series):
+        return obj.apply(normalize_country)
+
+    # DataFrame → apply column-wise
+    if isinstance(obj, pd.DataFrame):
+        if "country" in obj.columns:
+            obj = obj.copy()
+            obj["country"] = obj["country"].apply(normalize_country)
+        return obj
+
+    # Scalar
+    if pd.isna(obj):
+        return "UNKNOWN"
+
+    s = str(obj).strip().upper()
+    s = s.replace("É", "E").replace("È", "E")
+
+    if s in {
+        "USA", "US", "UNITED STATES",
+        "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"
+    }:
+        return "USA"
+
+    return s
+
 
 def download_all_fatalities():
     """
