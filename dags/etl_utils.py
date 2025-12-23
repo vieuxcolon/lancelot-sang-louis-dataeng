@@ -806,8 +806,6 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 
 def create_dimensions_and_fact():
-    import pandas as pd
-    import numpy as np
 
     conn = pg_connect()
     cur = conn.cursor()
@@ -818,9 +816,7 @@ def create_dimensions_and_fact():
     def normalize_country(value):
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "UNKNOWN"
-
         s = str(value).strip().upper()
-        # Normalize accents
         s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
         if s in {"USA", "US", "UNITED STATES", "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"}:
             return "USA"
@@ -859,21 +855,28 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # LOAD CLEAN TABLES
+    # LOAD CLEAN TABLES AND RENAME DATES
     # ==================================================
     df_aria = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["ariadb_clean_table"]}"', conn)
     df_fatal = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["fatalities_clean_table"]}"', conn)
     df_work = pd.read_sql('SELECT * FROM "workaccidents_clean"', conn)
 
-    # Normalize country for all tables
     for df in [df_aria, df_fatal, df_work]:
+        # Normalize country
         if "country" in df.columns:
             df["country"] = df["country"].apply(normalize_country)
+        # Standardize date column
+        if "incident_date" in df.columns:
+            df.rename(columns={"incident_date": "date_of_incident"}, inplace=True)
+        if "accident_date" in df.columns:
+            df.rename(columns={"accident_date": "date_of_incident"}, inplace=True)
+        if "date" in df.columns:
+            df.rename(columns={"date": "date_of_incident"}, inplace=True)
 
-    # Drop rows with key missing values
-    df_aria = drop_empty_rows(df_aria, ["municipality", "department", "country", "incident_date"])
-    df_fatal = drop_empty_rows(df_fatal, ["country", "date"])
-    df_work = drop_empty_rows(df_work, ["city", "state", "country", "accident_date"])
+    # Drop empty rows
+    df_aria = drop_empty_rows(df_aria, ["municipality", "department", "country", "date_of_incident"])
+    df_fatal = drop_empty_rows(df_fatal, ["city", "state", "country", "date_of_incident"])
+    df_work = drop_empty_rows(df_work, ["city", "state", "country", "date_of_incident"])
 
     # ==================================================
     # ORIGINAL DIM LOCATION
@@ -881,12 +884,8 @@ def create_dimensions_and_fact():
     frames = []
     if all(c in df_aria.columns for c in ["municipality", "department", "country"]):
         frames.append(df_aria[["municipality", "department", "country"]])
-    if all(c in df_fatal.columns for c in ["country"]):
-        # For df_fatal, create dummy municipality/department
-        df_fatal_loc = df_fatal.copy()
-        df_fatal_loc["municipality"] = "UNKNOWN"
-        df_fatal_loc["department"] = "UNKNOWN"
-        frames.append(df_fatal_loc[["municipality", "department", "country"]])
+    if all(c in df_fatal.columns for c in ["city", "state", "country"]):
+        frames.append(df_fatal[["city", "state", "country"]].rename(columns={"city": "municipality", "state": "department"}))
     if all(c in df_work.columns for c in ["city", "state", "country"]):
         frames.append(df_work[["city", "state", "country"]].rename(columns={"city": "municipality", "state": "department"}))
 
@@ -950,20 +949,20 @@ def create_dimensions_and_fact():
             date DATE UNIQUE
         );
     """)
-    # Collect all dates
+    # Collect unique dates across all tables
     all_dates = pd.concat([
-        df_aria[["incident_date"]].rename(columns={"incident_date":"date"}),
-        df_fatal[["date"]].rename(columns={"date":"date"}),
-        df_work[["accident_date"]].rename(columns={"accident_date":"date"})
+        df_aria[["date_of_incident"]],
+        df_fatal[["date_of_incident"]],
+        df_work[["date_of_incident"]]
     ], ignore_index=True)
-    all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce")
-    all_dates = all_dates.dropna().drop_duplicates().sort_values("date").reset_index(drop=True)
-    for _, r in all_dates.iterrows():
-        cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date,))
+    all_dates["date_of_incident"] = pd.to_datetime(all_dates["date_of_incident"], errors="coerce")
+    all_dates = all_dates.dropna().drop_duplicates().sort_values("date_of_incident").reset_index(drop=True)
+    for idx, r in all_dates.iterrows():
+        cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date_of_incident,))
     conn.commit()
 
     # ==================================================
-    # OTHER DIM TABLES (EMPTY STRUCTURES)
+    # OTHER DIM TABLES (EMPTY STRUCTURES TO AVOID ERRORS)
     # ==================================================
     for table_name in ["dim_industry", "dim_accident_type", "dim_hazard", "dim_employer"]:
         cur.execute(f"""
@@ -1006,20 +1005,13 @@ def create_dimensions_and_fact():
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
 
     # ==================================================
-    # BUILD FACT (USA SAFE)
+    # BUILD FACT
     # ==================================================
-    df_dates = pd.read_sql("SELECT * FROM dim_date", conn)
-
-    def build_fact(df, date_col):
+    def build_fact(df):
         df2 = df.copy()
-        # Ensure dummy municipality/department exist
-        if "municipality" not in df2.columns:
-            df2["municipality"] = "UNKNOWN"
-        if "department" not in df2.columns:
-            df2["department"] = "UNKNOWN"
         df2[["municipality","department","country"]] = normalize_text(df2[["municipality","department","country"]].fillna("UNKNOWN"))
-        df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
-        df2 = df2.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left").drop(columns=["date"], errors="ignore")
+        df2["date_of_incident"] = pd.to_datetime(df2["date_of_incident"], errors="coerce")
+        df2 = df2.merge(df_dates[["date","date_id"]], left_on="date_of_incident", right_on="date", how="left").drop(columns=["date"], errors="ignore")
         df2 = df2.merge(df_dim_location, on=["municipality","department","country"], how="left")
         df2[["date_id","location_id"]] = df2[["date_id","location_id"]].fillna(0).astype(int)
         return df2[["date_id","location_id"]]
@@ -1033,11 +1025,11 @@ def create_dimensions_and_fact():
             location_id INT
         );
     """)
-
+    df_dates = pd.read_sql("SELECT * FROM dim_date", conn)
     df_fact = pd.concat([
-        build_fact(df_aria, "incident_date"),
-        build_fact(df_fatal, "date"),
-        build_fact(df_work, "accident_date"),
+        build_fact(df_aria),
+        build_fact(df_fatal),
+        build_fact(df_work)
     ], ignore_index=True)
 
     for _, r in df_fact.iterrows():
@@ -1045,8 +1037,7 @@ def create_dimensions_and_fact():
 
     conn.commit()
     conn.close()
-
-    print("✔ Star schema created successfully (all dims recreated, USA-normalized, synonym-safe)")
+    print("✔ Star schema created successfully (all dims recreated, consistent date_of_incident, USA-normalized, synonym-safe)")
 
 # =====================================================================================
 # STAR SCHEMA TESTS — UPDATED FOR CURRENT ETL
