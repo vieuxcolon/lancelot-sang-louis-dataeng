@@ -829,7 +829,8 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 def create_dimensions_and_fact():
     """
     Build all dimensions and the fact table for the star schema.
-    Memory-safe, idempotent, and analytically correct.
+    Memory-safe, idempotent, analytically correct.
+    Includes a 'fatalities_count' column in fact_accidents instead of row duplication.
     """
 
     import pandas as pd
@@ -882,12 +883,9 @@ def create_dimensions_and_fact():
     # ORIGINAL DIM LOCATION (RAW)
     # ==================================================
     frames = []
-    if "country" in df_aria.columns:
-        frames.append(df_aria[["country"]])
-    if "country" in df_fatal.columns:
-        frames.append(df_fatal[["country"]])
-    if "country" in df_work.columns:
-        frames.append(df_work[["country"]])
+    for df in [df_aria, df_fatal, df_work]:
+        if "country" in df.columns:
+            frames.append(df[["country"]])
 
     df_orig_loc = pd.concat(frames).drop_duplicates()
     df_orig_loc["country"] = normalize_text(df_orig_loc["country"]).fillna("UNKNOWN")
@@ -970,7 +968,6 @@ def create_dimensions_and_fact():
         ) t;
     """)
     conn.commit()
-
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
 
     # ==================================================
@@ -997,7 +994,6 @@ def create_dimensions_and_fact():
             day INT
         );
     """)
-
     execute_batch(
         cur,
         "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s)",
@@ -1066,13 +1062,14 @@ def create_dimensions_and_fact():
             location_id INT,
             hazard_id INT,
             accident_type_id INT,
-            industry_id INT
+            industry_id INT,
+            fatalities_count INT
         );
     """)
     conn.commit()
 
     # ==================================================
-    # BUILD FACT (CHUNKED + FATALITY WEIGHTED)
+    # BUILD FACT (WITH fatalities_count)
     # ==================================================
     def build_fact(df, date_col):
         df = df.copy()
@@ -1090,23 +1087,34 @@ def create_dimensions_and_fact():
         df["date_id"] = df["date_id"].fillna(0).astype(int)
         df["location_id"] = df["location_id"].fillna(0).astype(int)
 
-        return df[["date_id", "location_id"]]
+        # Fatalities count logic
+        if "no_of_fatalities" in df.columns:
+            df["fatalities_count"] = df["no_of_fatalities"].fillna(1).astype(int).clip(lower=1)
+        else:
+            df["fatalities_count"] = 1
 
-    # Fatalities weighting FIX
-    df_fatal["no_of_fatalities"] = df_fatal["no_of_fatalities"].fillna(1).astype(int).clip(lower=1)
-    df_fatal_fact = build_fact(df_fatal, "date")
+        return df[["date_id", "location_id", "fatalities_count"]]
 
-    for i, r in df_fatal_fact.iterrows():
-        for _ in range(df_fatal.loc[i, "no_of_fatalities"]):
-            cur.execute(
-                "INSERT INTO fact_accidents VALUES (%s,0,%s,0,0,0)",
-                (r.date_id, r.location_id)
-            )
+    # Build fact tables from each source
+    df_fact_list = [
+        build_fact(df_aria, "incident_date"),
+        build_fact(df_fatal, "date"),
+        build_fact(df_work, "accident_date")
+    ]
+    df_fact = pd.concat(df_fact_list, ignore_index=True)
+    df_fact = df_fact[(df_fact["date_id"] != 0) & (df_fact["location_id"] != 0)]
 
+    # Insert into fact table
+    execute_batch(
+        cur,
+        "INSERT INTO fact_accidents (date_id, employer_id, location_id, hazard_id, accident_type_id, industry_id, fatalities_count) VALUES (%s,0,%s,0,0,0,%s)",
+        [(r.date_id, r.location_id, r.fatalities_count) for r in df_fact.itertuples()]
+    )
     conn.commit()
     conn.close()
 
-    print("✔ Star schema created successfully (memory-safe, weighted, consistent)")
+    print("✔ Star schema created successfully (memory-safe, fatalities_count included)")
+
 
 
 # =====================================================================================
