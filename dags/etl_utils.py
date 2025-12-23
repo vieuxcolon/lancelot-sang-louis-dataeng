@@ -829,7 +829,7 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 def create_dimensions_and_fact():
     """
     Build all dimensions and the fact table for the star schema.
-    Memory-safe, idempotent, and analytically correct.
+    Memory-safe, deterministic, weighted by fatalities.
     """
 
     import pandas as pd
@@ -844,10 +844,10 @@ def create_dimensions_and_fact():
     tables_to_drop = [
         "fact_accidents",
         "dim_location",
-        "dim_industry",
-        "dim_accident_type",
-        "dim_hazard",
         "dim_employer",
+        "dim_hazard",
+        "dim_accident_type",
+        "dim_industry",
         "dim_date",
         "country_synonym",
         "dim_country",
@@ -879,15 +879,12 @@ def create_dimensions_and_fact():
     df_work = drop_empty_rows(df_work, ["country", "accident_date"])
 
     # ==================================================
-    # ORIGINAL DIM LOCATION (RAW)
+    # ORIGINAL DIM LOCATION (COUNTRY ONLY)
     # ==================================================
     frames = []
-    if "country" in df_aria.columns:
-        frames.append(df_aria[["country"]])
-    if "country" in df_fatal.columns:
-        frames.append(df_fatal[["country"]])
-    if "country" in df_work.columns:
-        frames.append(df_work[["country"]])
+    if "country" in df_aria.columns: frames.append(df_aria[["country"]])
+    if "country" in df_fatal.columns: frames.append(df_fatal[["country"]])
+    if "country" in df_work.columns: frames.append(df_work[["country"]])
 
     df_orig_loc = pd.concat(frames).drop_duplicates()
     df_orig_loc["country"] = normalize_text(df_orig_loc["country"]).fillna("UNKNOWN")
@@ -897,8 +894,11 @@ def create_dimensions_and_fact():
             country TEXT
         );
     """)
-    execute_batch(cur, "INSERT INTO original_dim_location VALUES (%s)",
-                  [(c,) for c in df_orig_loc["country"]])
+    execute_batch(
+        cur,
+        "INSERT INTO original_dim_location VALUES (%s)",
+        [(c,) for c in df_orig_loc["country"]]
+    )
     conn.commit()
 
     # ==================================================
@@ -938,7 +938,7 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # DIM LOCATION (COUNTRY ONLY)
+    # DIM LOCATION
     # ==================================================
     cur.execute("""
         CREATE TABLE dim_location (
@@ -963,11 +963,10 @@ def create_dimensions_and_fact():
         ) t;
     """)
     conn.commit()
-
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
 
     # ==================================================
-    # DIM DATE
+    # DIM DATE (PERMANENT FIX)
     # ==================================================
     all_dates = pd.concat([
         pd.to_datetime(df_aria.get("incident_date"), errors="coerce"),
@@ -979,8 +978,9 @@ def create_dimensions_and_fact():
     df_dates["year"] = df_dates["date"].dt.year
     df_dates["month"] = df_dates["date"].dt.month
     df_dates["day"] = df_dates["date"].dt.day
-    df_dates["date_id"] = range(1, len(df_dates) + 1)
+    df_dates["date_id"] = range(1, len(df_dates) + 1)  # integer IDs
 
+    cur.execute("DROP TABLE IF EXISTS dim_date;")
     cur.execute("""
         CREATE TABLE dim_date (
             date_id INT PRIMARY KEY,
@@ -990,8 +990,11 @@ def create_dimensions_and_fact():
             day INT
         );
     """)
-    execute_batch(cur, "INSERT INTO dim_date VALUES (%s,%s,%s,%s,%s)",
-                  df_dates.values.tolist())
+    execute_batch(
+        cur,
+        "INSERT INTO dim_date (date_id, date, year, month, day) VALUES (%s,%s,%s,%s,%s)",
+        df_dates[["date_id", "date", "year", "month", "day"]].values.tolist()
+    )
     conn.commit()
 
     # ==================================================
@@ -1016,12 +1019,9 @@ def create_dimensions_and_fact():
     # DIM HAZARD
     # ==================================================
     haz_frames = []
-    if "hazard_class" in df_aria:
-        haz_frames.append(df_aria[["hazard_class"]].rename(columns={"hazard_class":"hazard"}))
-    if "hazard_description" in df_fatal:
-        haz_frames.append(df_fatal[["hazard_description"]].rename(columns={"hazard_description":"hazard"}))
-    if "nature" in df_work:
-        haz_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
+    if "hazard_class" in df_aria: haz_frames.append(df_aria[["hazard_class"]].rename(columns={"hazard_class":"hazard"}))
+    if "hazard_description" in df_fatal: haz_frames.append(df_fatal[["hazard_description"]].rename(columns={"hazard_description":"hazard"}))
+    if "nature" in df_work: haz_frames.append(df_work[["nature"]].rename(columns={"nature":"hazard"}))
 
     df_haz = pd.concat(haz_frames).dropna().drop_duplicates()
     df_haz["hazard"] = normalize_text(df_haz["hazard"])
@@ -1035,52 +1035,6 @@ def create_dimensions_and_fact():
     """)
     cur.execute("INSERT INTO dim_hazard VALUES (0,'UNKNOWN')")
     execute_batch(cur, "INSERT INTO dim_hazard VALUES (%s,%s)", df_haz.values.tolist())
-    conn.commit()
-
-    # ==================================================
-    # DIM ACCIDENT TYPE & INDUSTRY
-    # ==================================================
-    acc_frames = []
-    if "accident_type" in df_aria:
-        acc_frames.append(df_aria[["accident_type"]])
-    if "accident_type" in df_fatal:
-        acc_frames.append(df_fatal[["accident_type"]])
-    if "accident_type" in df_work:
-        acc_frames.append(df_work[["accident_type"]])
-
-    df_acc = pd.concat(acc_frames).dropna().drop_duplicates()
-    df_acc["accident_type"] = normalize_text(df_acc["accident_type"])
-    df_acc.insert(0, "accident_type_id", range(1, len(df_acc) + 1))
-
-    cur.execute("""
-        CREATE TABLE dim_accident_type (
-            accident_type_id INT PRIMARY KEY,
-            accident_type TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_accident_type VALUES (0,'UNKNOWN')")
-    execute_batch(cur, "INSERT INTO dim_accident_type VALUES (%s,%s)", df_acc.values.tolist())
-
-    ind_frames = []
-    if "industry_code" in df_aria:
-        ind_frames.append(df_aria[["industry_code"]])
-    if "industry_code" in df_fatal:
-        ind_frames.append(df_fatal[["industry_code"]])
-    if "industry_code" in df_work:
-        ind_frames.append(df_work[["industry_code"]])
-
-    df_ind = pd.concat(ind_frames).dropna().drop_duplicates()
-    df_ind["industry_code"] = normalize_text(df_ind["industry_code"])
-    df_ind.insert(0, "industry_id", range(1, len(df_ind) + 1))
-
-    cur.execute("""
-        CREATE TABLE dim_industry (
-            industry_id INT PRIMARY KEY,
-            industry_code TEXT
-        );
-    """)
-    cur.execute("INSERT INTO dim_industry VALUES (0,'UNKNOWN')")
-    execute_batch(cur, "INSERT INTO dim_industry VALUES (%s,%s)", df_ind.values.tolist())
     conn.commit()
 
     # ==================================================
@@ -1099,45 +1053,32 @@ def create_dimensions_and_fact():
     conn.commit()
 
     # ==================================================
-    # BUILD FACT (memory-safe, weighted, all dimensions)
+    # BUILD FACT (weighted fatalities)
     # ==================================================
-    def map_ids(df, date_col):
+    def build_fact(df, date_col):
         df = df.copy()
         df["country"] = normalize_text(df["country"].fillna("UNKNOWN"))
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-
-        df = df.merge(df_dates[["date","date_id"]], left_on=date_col, right_on="date", how="left")
-        df = df.merge(df_dim_location[["country","location_id"]], on="country", how="left")
-        df = df.merge(df_emp, left_on="employer", right_on="employer", how="left")
-        df = df.merge(df_haz, left_on="hazard", right_on="hazard", how="left")
-        df = df.merge(df_acc, left_on="accident_type", right_on="accident_type", how="left")
-        df = df.merge(df_ind, left_on="industry_code", right_on="industry_code", how="left")
-
+        df = df.merge(df_dates[["date", "date_id"]], left_on=date_col, right_on="date", how="left")
+        df = df.merge(df_dim_location[["country", "location_id"]], on="country", how="left")
         df["date_id"] = df["date_id"].fillna(0).astype(int)
         df["location_id"] = df["location_id"].fillna(0).astype(int)
-        df["employer_id"] = df["employer_id"].fillna(0).astype(int)
-        df["hazard_id"] = df["hazard_id"].fillna(0).astype(int)
-        df["accident_type_id"] = df["accident_type_id"].fillna(0).astype(int)
-        df["industry_id"] = df["industry_id"].fillna(0).astype(int)
+        return df[["date_id", "location_id"]]
 
-        return df[["date_id","employer_id","location_id","hazard_id","accident_type_id","industry_id"]]
-
-    # Weight fatalities
+    # Fatalities weighting
     df_fatal["no_of_fatalities"] = df_fatal["no_of_fatalities"].fillna(1).astype(int).clip(lower=1)
-    df_fact = map_ids(df_fatal, "date")
+    df_fatal_fact = build_fact(df_fatal, "date")
 
-    # Insert each fatality as a row
-    for i, r in df_fact.iterrows():
+    for i, r in df_fatal_fact.iterrows():
         for _ in range(df_fatal.loc[i, "no_of_fatalities"]):
             cur.execute(
-                "INSERT INTO fact_accidents VALUES (%s,%s,%s,%s,%s,%s)",
-                (r.date_id, r.employer_id, r.location_id, r.hazard_id, r.accident_type_id, r.industry_id)
+                "INSERT INTO fact_accidents VALUES (%s,0,%s,0,0,0)",
+                (r.date_id, r.location_id)
             )
 
     conn.commit()
     conn.close()
-
-    print("✔ Star schema created successfully (memory-safe, weighted, dimensionally correct)")
+    print("✔ Star schema created successfully (deterministic, weighted, memory-safe)")
 
 
 # =====================================================================================
