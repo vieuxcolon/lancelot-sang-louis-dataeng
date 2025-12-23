@@ -827,9 +827,98 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 
 def create_dimensions_and_fact():
- 
+    """
+    Build all dimensions and the fact table for the star schema.
+    Drops existing tables to avoid duplication errors.
+    """
     conn = pg_connect()
     cur = conn.cursor()
+
+    # -------------------- DIM_DATE --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_date;")
+    cur.execute("""
+    CREATE TABLE dim_date (
+        date_id INT PRIMARY KEY,
+        date DATE,
+        year INT,
+        month INT,
+        day INT
+    );
+    """)
+
+    # -------------------- DIM_EMPLOYER --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_employer;")
+    cur.execute("""
+    CREATE TABLE dim_employer (
+        employer_id INT PRIMARY KEY,
+        employer TEXT
+    );
+    """)
+
+    # -------------------- DIM_COUNTRY --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_country;")
+    cur.execute("""
+    CREATE TABLE dim_country (
+        country_id SERIAL PRIMARY KEY,
+        country_name TEXT UNIQUE
+    );
+    """)
+
+    # Optional: if dim_location is kept
+    cur.execute("DROP TABLE IF EXISTS dim_location;")
+    cur.execute("""
+    CREATE TABLE dim_location (
+        location_id INT PRIMARY KEY,
+        country_id INT REFERENCES dim_country(country_id)
+    );
+    """)
+
+    # -------------------- DIM_HAZARD --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_hazard;")
+    cur.execute("""
+    CREATE TABLE dim_hazard (
+        hazard_id INT PRIMARY KEY,
+        hazard TEXT
+    );
+    """)
+
+    # -------------------- DIM_ACCIDENT_TYPE --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_accident_type;")
+    cur.execute("""
+    CREATE TABLE dim_accident_type (
+        accident_type_id INT PRIMARY KEY,
+        accident_type TEXT
+    );
+    """)
+
+    # -------------------- DIM_INDUSTRY --------------------
+    cur.execute("DROP TABLE IF EXISTS dim_industry;")
+    cur.execute("""
+    CREATE TABLE dim_industry (
+        industry_id INT PRIMARY KEY,
+        industry_code TEXT
+    );
+    """)
+
+    # -------------------- FACT_ACCIDENTS --------------------
+    cur.execute("DROP TABLE IF EXISTS fact_accidents;")
+    cur.execute("""
+    CREATE TABLE fact_accidents (
+        date_id INT,
+        employer_id INT,
+        location_id INT,   -- now represents country only
+        hazard_id INT,
+        accident_type_id INT,
+        industry_id INT
+    );
+    """)
+
+    # Commit changes and close connection
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    print("✔ All dimensions and fact table created (drop-if-exists applied).")
 
     # ==================================================
     # HELPERS
