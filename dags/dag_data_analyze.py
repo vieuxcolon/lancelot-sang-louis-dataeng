@@ -1,4 +1,4 @@
-# =================== dag_data_analyze.py =================================================================
+# =================== dag_data_analyze.py ===================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
@@ -14,16 +14,20 @@ with DAG(
 ) as dag:
 
     t1_star_schema = PythonOperator(
-        task_id="create_star_schema", python_callable=create_dimensions_and_fact
-    )
-    t2_min_test = PythonOperator(
-        task_id="min_test_star_schema", python_callable=min_test_star_schema
-    )
-    t3_full_test = PythonOperator(
-        task_id="full_test_star_schema", python_callable=full_test_star_schema
+        task_id="create_star_schema",
+        python_callable=create_dimensions_and_fact
     )
 
-    # Trigger analytics DAG after all tests
+    t2_min_test = PythonOperator(
+        task_id="min_test_star_schema",
+        python_callable=min_test_star_schema
+    )
+
+    t3_full_test = PythonOperator(
+        task_id="full_test_star_schema",
+        python_callable=full_test_star_schema
+    )
+
     trigger_analytics = TriggerDagRunOperator(
         task_id="trigger_data_analytics",
         trigger_dag_id="dag_data_analytics_validation",
