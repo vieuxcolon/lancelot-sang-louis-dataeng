@@ -1017,7 +1017,6 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 # STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
 # =====================================================================================
-
 def create_star_schema():
     import pandas as pd
 
@@ -1228,6 +1227,7 @@ def create_star_schema():
     """)
     conn.commit()
 
+    # Reload dimensions for merges
     df_dim_date = pd.read_sql("SELECT * FROM dim_date", conn)
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
     df_dim_industry = pd.read_sql("SELECT * FROM dim_industry", conn)
@@ -1235,6 +1235,9 @@ def create_star_schema():
     df_dim_hazard = pd.read_sql("SELECT * FROM dim_hazard", conn)
     df_dim_employer = pd.read_sql("SELECT * FROM dim_employer", conn)
 
+    # ==================================================
+    # 10️⃣ Robust build_fact() ensuring all FK columns
+    # ==================================================
     def build_fact(df):
         f = df.copy()
         f = f.merge(df_dim_date, on="date", how="left")
@@ -1248,25 +1251,27 @@ def create_star_schema():
         ]:
             if src in f.columns:
                 f = f.merge(dim, left_on=src, right_on="name", how="left")
-                f.rename(columns={id_col: id_col}, inplace=True)
+                f[id_col] = f[id_col].fillna(0).astype(int)
+            else:
+                f[id_col] = 0
 
-        for c in [
-            "date_id", "location_id", "employer_id",
-            "hazard_id", "accident_type_id", "industry_id"
-        ]:
-            f[c] = f[c].fillna(0).astype(int)
+        for c in ["date_id", "location_id", "employer_id", "hazard_id", "accident_type_id", "industry_id"]:
+            if c not in f.columns:
+                f[c] = 0
+            else:
+                f[c] = f[c].fillna(0).astype(int)
 
         return f[
             ["date_id", "location_id", "employer_id",
              "hazard_id", "accident_type_id", "industry_id"]
         ]
 
+    # Build fact table
     df_fact = pd.concat(
         [build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)],
         ignore_index=True
     )
 
-    # Log number of rows referencing UNKNOWN keys
     unknown_date_rows = (df_fact['date_id'] == 0).sum()
     unknown_location_rows = (df_fact['location_id'] == 0).sum()
     print(f"Rows with unknown date_id: {unknown_date_rows}, unknown location_id: {unknown_location_rows}")
