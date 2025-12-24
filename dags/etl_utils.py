@@ -1338,54 +1338,54 @@ def create_star_schema():
     conn.close()
     print("✔ Star schema successfully created from prep tables!")
 
-    def min_test_star_schema():
-        """
-        Minimal test: select top 5 rows from fact_accidents and ensure dimension IDs exist.
-        """
-        conn = pg_connect()
-        query = """
-            SELECT 
-                date_id,
-                location_id,
-                employer_id,
-                hazard_id,
-                accident_type_id,
-                industry_id
-            FROM fact_accidents
-            LIMIT 5;
-        """
-        df_test = pd.read_sql(query, conn)
-        conn.close()
+def min_test_star_schema():
+    """
+    Minimal test: select top 5 rows from fact_accidents and ensure dimension IDs exist.
+    """
+    conn = pg_connect()
+    query = """
+        SELECT 
+            date_id,
+            location_id,
+            employer_id,
+            hazard_id,
+            accident_type_id,
+            industry_id
+        FROM fact_accidents
+        LIMIT 5;
+    """
+    df_test = pd.read_sql(query, conn)
+    conn.close()
 
-        print("✔ min_test_star_schema result (top 5 rows):")
-        print(df_test)
-        return df_test
+    print("✔ min_test_star_schema result (top 5 rows):")
+    print(df_test)
+    return df_test
 
-    def full_test_star_schema():
-        """
-        Full test: join fact_accidents with all dimension tables to verify data mapping.
-        """
-        conn = pg_connect()
-        sql = """
-            SELECT 
-                f.date_id, d.date,
-                f.location_id, l.municipality, l.department, l.country, l.country_id,
-                f.employer_id, e.name AS employer_name,
-                f.hazard_id, h.name AS hazard_name,
-                f.accident_type_id, a.name AS accident_type_name,
-                f.industry_id, i.name AS industry_name
-            FROM fact_accidents f
-            LEFT JOIN dim_date d ON f.date_id = d.date_id
-            LEFT JOIN dim_location l ON f.location_id = l.location_id
-            LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
-            LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
-            LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-            LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
-            LIMIT 20;
-        """
-        df = pd.read_sql(sql, conn)
-        conn.close()
+def full_test_star_schema():
+    """
+    Full test: join fact_accidents with all dimension tables to verify data mapping.
+    """
+    conn = pg_connect()
+    sql = """
+        SELECT 
+            f.date_id, d.date,
+            f.location_id, l.municipality, l.department, l.country, l.country_id,
+            f.employer_id, e.name AS employer_name,
+            f.hazard_id, h.name AS hazard_name,
+            f.accident_type_id, a.name AS accident_type_name,
+            f.industry_id, i.name AS industry_name
+        FROM fact_accidents f
+        LEFT JOIN dim_date d ON f.date_id = d.date_id
+        LEFT JOIN dim_location l ON f.location_id = l.location_id
+        LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
+        LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
+        LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
+        LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
+        LIMIT 20;
+    """
+    df = pd.read_sql(sql, conn)
+    conn.close()
 
-        print("\n=== Full Star Schema Test (20 rows) ===")
-        print(df)
-        return df
+    print("\n=== Full Star Schema Test (20 rows) ===")
+    print(df)
+    return df
