@@ -3,7 +3,6 @@
 # It uses utility functions defined in etl_utils.py to perform tasks
 # such as downloading data, unzipping data, and loading it into a PostgreSQL database
 # ===========================================================================================================
-# =================== dag_data_download.py ===============================
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -32,7 +31,7 @@ with DAG(
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["download", "landing"]
+    tags=["download"]
 ) as dag:
 
     t1 = PythonOperator(
@@ -53,7 +52,9 @@ with DAG(
     trigger_clean = TriggerDagRunOperator(
         task_id="trigger_data_clean",
         trigger_dag_id="dag_data_clean",
-        wait_for_completion=False
+        wait_for_completion=True,
+        allowed_states=["success"],
+        failed_states=["failed"]
     )
 
     [t1, t2, t3] >> trigger_clean
