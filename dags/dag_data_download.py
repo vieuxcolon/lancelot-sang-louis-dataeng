@@ -1,3 +1,8 @@
+# =================== dag_data_download.py ====================================================================
+# This is the dag responsible for downloading ariab, workaccidents and fatalities data into the landing zone
+# It uses utility functions defined in etl_utils.py to perform tasks
+# such as downloading data, unzipping data, and loading it into a PostgreSQL database
+# ===========================================================================================================
 # =================== dag_data_download.py ===============================
 
 from airflow import DAG
