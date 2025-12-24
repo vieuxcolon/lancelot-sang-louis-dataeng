@@ -4,51 +4,70 @@
 # such as downloading data, unzipping data, and loading it into a PostgreSQL database
 # ===========================================================================================================
 
-# =================== dag_data_fetch.py ====================================================================
+# =================== dag_data_fetch.py ===================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
 from etl_utils import (
-    download_csv, download_all_fatalities, download_and_extract_zip,
-    load_to_postgres, DB_CONFIG, CSV_URL, DATA_DIR
+    create_database_and_set_config,
+    create_ariadb_prep,
+    create_workaccidents_prep,
+    create_fatalities_prep,
+    create_star_schema,
+    DB_CONFIG
 )
 
-# -------------------- TASK FUNCTIONS --------------------
-def task_load_ariadb():
-    csv_text = download_csv(CSV_URL, "ariadb.csv")
-    load_to_postgres(csv_text, table_name=DB_CONFIG["ariadb_table"], skiprows=7, sep=";")
+# -------------------------------------------------------------------------
+# Task: create_db_dataengdb
+# -------------------------------------------------------------------------
+def task_create_project_db():
+    """Create 'dataengdb' if it does not exist and update DB_CONFIG to point to it."""
+    create_database_and_set_config("dataengdb")
 
-def task_download_fatalities():
-    files = download_all_fatalities()
-    for f in files:
-        print(f"Downloaded {f}")
-
-def task_load_workaccidents():
-    csv_text = download_and_extract_zip()
-    load_to_postgres(csv_text, table_name=DB_CONFIG["workaccidents_table"], sep=",")
-
-# -------------------- DAG DEFINITION --------------------
+# -------------------------------------------------------------------------
+# DAG definition
+# -------------------------------------------------------------------------
 with DAG(
     dag_id="dag_data_fetch",
     start_date=datetime(2025, 1, 1),
     schedule=None,
     catchup=False,
     max_active_runs=1,
+    tags=["dataeng"]
 ) as dag:
 
-    # Load raw datasets (parallel)
-    t1_load_ariadb = PythonOperator(task_id="load_ariadb", python_callable=task_load_ariadb)
-    t2_download_fatalities = PythonOperator(task_id="download_fatalities", python_callable=task_download_fatalities)
-    t3_load_workaccidents = PythonOperator(task_id="load_workaccidents", python_callable=task_load_workaccidents)
-
-    # Trigger next DAG: dag_data_clean synchronously
-    trigger_clean = TriggerDagRunOperator(
-        task_id="trigger_data_clean",
-        trigger_dag_id="dag_data_clean",
-        wait_for_completion=True
+    # 0️⃣ Create database if it doesn't exist
+    t0_create_db = PythonOperator(
+        task_id="create_db_dataengdb",
+        python_callable=task_create_project_db
     )
 
-    # -------------------- DEPENDENCIES --------------------
-    # All fetch tasks can run in parallel before triggering the clean DAG
-    [t1_load_ariadb, t2_download_fatalities, t3_load_workaccidents] >> trigger_clean
+    # 1️⃣ Create ariadb prep table
+    t1_create_ariadb_prep = PythonOperator(
+        task_id="create_ariadb_prep",
+        python_callable=create_ariadb_prep
+    )
+
+    # 2️⃣ Create workaccidents prep table
+    t2_create_workaccidents_prep = PythonOperator(
+        task_id="create_workaccidents_prep",
+        python_callable=create_workaccidents_prep
+    )
+
+    # 3️⃣ Create fatalities prep table
+    t3_create_fatalities_prep = PythonOperator(
+        task_id="create_fatalities_prep",
+        python_callable=create_fatalities_prep
+    )
+
+    # 4️⃣ Create star schema (dimensions + fact)
+    t4_create_star_schema = PythonOperator(
+        task_id="create_star_schema",
+        python_callable=create_star_schema
+    )
+
+    # ---------------------------------------------------------------------
+    # Define DAG dependencies
+    # ---------------------------------------------------------------------
+    t0_create_db >> [t1_create_ariadb_prep, t2_create_workaccidents_prep, t3_create_fatalities_prep] >> t4_create_star_schema
+
