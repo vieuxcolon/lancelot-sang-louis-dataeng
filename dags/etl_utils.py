@@ -693,15 +693,12 @@ def create_workaccidents_clean():
     else:
         df["accident_date"] = None
 
-    # Rename to standardized column 'date' to match other clean tables
-    df.rename(columns={"accident_date": "date"}, inplace=True)
-
     # Normalize country (USA for all workaccidents)
     df["country"] = "USA"
 
     # Select relevant columns
     selected_columns = [
-        "id", "upa", "date", "employer", "address1", "address2",
+        "id", "upa", "accident_date", "employer", "address1", "address2",
         "city", "state", "zip", "latitude", "longitude", "primary_naics",
         "hospitalized", "amputation", "loss_of_eye", "inspection", "nature",
         "naturetitle", "part_of_body", "part_of_body_title", "event",
@@ -732,7 +729,6 @@ def create_workaccidents_clean():
     conn.commit()
     conn.close()
     print(f"✔ Created workaccidents_clean ({len(df_clean)} rows)")
-
 
 
 # 3️⃣ FATALITIES
