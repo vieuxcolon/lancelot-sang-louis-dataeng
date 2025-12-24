@@ -11,7 +11,6 @@ def print_section(title, df):
     print(f"== {title.upper()} ==")
     print("="*80 + "\n")
     print(df.to_string(index=False))
-    print("\n" + "="*80 + "\n")
 
 def fatalities_by_year():
     conn = pg_connect()
@@ -55,7 +54,7 @@ with DAG(
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["analytics", "validation"]
+    tags=["analytics"]
 ) as dag:
 
     t1 = PythonOperator(
