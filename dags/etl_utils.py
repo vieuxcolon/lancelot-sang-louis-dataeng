@@ -1053,7 +1053,7 @@ def create_star_schema():
         "original_dim_location"
     ]
     for t in tables_to_drop:
-        cur.execute(f"DROP TABLE IF EXISTS {t}")
+        cur.execute(f'DROP TABLE IF EXISTS "{t}" CASCADE')
     conn.commit()
 
     # ==================================================
