@@ -1,4 +1,5 @@
 # =================== dag_data_analytics_validation.py ===================
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime
@@ -19,11 +20,11 @@ def print_section(title, df):
 def fatalities_by_year():
     conn = pg_connect()
     df = pd.read_sql("""
-        SELECT d.year, COUNT(*) AS total_fatalities
+        SELECT d.date AS year, COUNT(*) AS total_fatalities
         FROM fact_accidents f
         JOIN dim_date d ON f.date_id = d.date_id
-        GROUP BY d.year
-        ORDER BY d.year
+        GROUP BY d.date
+        ORDER BY d.date
     """, conn)
     conn.close()
     print_section("Fatalities by Year", df)
@@ -59,10 +60,10 @@ def top_countries(n=10):
 def fatalities_by_industry():
     conn = pg_connect()
     df = pd.read_sql("""
-        SELECT i.industry_code, COUNT(*) AS total_fatalities
+        SELECT i.name AS industry_name, COUNT(*) AS total_fatalities
         FROM fact_accidents f
         JOIN dim_industry i ON f.industry_id = i.industry_id
-        GROUP BY i.industry_code
+        GROUP BY i.name
         ORDER BY total_fatalities DESC
     """, conn)
     conn.close()
