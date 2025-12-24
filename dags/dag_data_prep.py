@@ -1,5 +1,7 @@
 # =================== dag_data_prep.py ===============================
 
+# =================== dag_data_prep.py ===================
+
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
@@ -22,7 +24,7 @@ with DAG(
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["prep", "modeling"]
+    tags=["prep"]
 ) as dag:
 
     t0 = PythonOperator(
@@ -53,8 +55,9 @@ with DAG(
     trigger_analyze = TriggerDagRunOperator(
         task_id="trigger_data_analyze",
         trigger_dag_id="dag_data_analyze",
-        wait_for_completion=False,
-        reset_dag_run=True
+        wait_for_completion=True,
+        allowed_states=["success"],
+        failed_states=["failed"]
     )
 
     t0 >> [t1, t2, t3] >> t4 >> trigger_analyze
