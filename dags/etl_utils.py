@@ -1396,21 +1396,28 @@ def create_dimensions_and_fact():
     cur.execute("""
         CREATE TABLE dim_date (
             date_id SERIAL PRIMARY KEY,
-            date DATE UNIQUE
+            date TEXT UNIQUE
         );
     """)
-    # Collect unique dates across all tables
+
+    # Collect unique dates from all prep tables
     all_dates = pd.concat([
         df_aria[["date_of_incident"]],
         df_fatal[["date_of_incident"]],
         df_work[["date_of_incident"]]
     ], ignore_index=True)
-    all_dates["date_of_incident"] = pd.to_datetime(all_dates["date_of_incident"], errors="coerce")
+
+    # Convert to datetime to standardize, then format as YYYY-MM-DD strings
+    all_dates["date_of_incident"] = pd.to_datetime(all_dates["date_of_incident"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # Drop invalid or duplicate dates
     all_dates = all_dates.dropna().drop_duplicates().sort_values("date_of_incident").reset_index(drop=True)
+
+    # Insert into dim_date
     for idx, r in all_dates.iterrows():
         cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date_of_incident,))
     conn.commit()
-
+    
     # ==================================================
     # OTHER DIM TABLES (EMPTY STRUCTURES TO AVOID ERRORS)
     # ==================================================
