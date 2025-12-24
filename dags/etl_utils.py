@@ -57,7 +57,7 @@ DB_CONFIG = {
     "dbname": "airflow",
     "user": "airflow",
     "password": "airflow",
-    "ariadb_table": "ariadb",
+    "ariadb_table": "dataengdb",
     "ariadb_clean_table": "ariadb_clean",
     "ariadb_prep_table": "ariadb_prep",
     "workaccidents_table": "workaccidents",
