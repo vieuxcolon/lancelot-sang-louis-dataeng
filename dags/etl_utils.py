@@ -811,31 +811,39 @@ def create_ariadb_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1. Rename date
+    # 1️⃣ Rename date
     if "incident_date" in df.columns:
         df["date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["incident_date"], inplace=True)
 
-    # 2. Normalize country
-    df = normalize_country(df, "country")
+    # 2️⃣ Normalize country
+    if "country" in df.columns:
+        df = normalize_country(df, "country")
 
-    # 3. Add fatality
+    # 3️⃣ Add fatality
     df["fatality"] = df["accident_type"].apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0)
 
-    # 4. Drop rows where all key columns are null
+    # 4️⃣ Drop rows where all key columns are null
     key_cols = ["aria_id","date","country","department","municipality","accident_type","hazard_class","industry_code"]
-    df = df.dropna(how="all", subset=key_cols)
+    df = df.dropna(how="all", subset=[c for c in key_cols if c in df.columns])
 
-    # 5. Drop rows with only aria_id
-    df = df[df[key_cols[1:]].notna().any(axis=1)]
+    # 5️⃣ Drop rows with only PK populated
+    non_pk_cols = [c for c in key_cols if c != "aria_id" and c in df.columns]
+    if non_pk_cols:
+        df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 6. Save to prep table
+    # 6️⃣ Deduplicate on PK
+    if "aria_id" in df.columns:
+        df = df.drop_duplicates(subset=["aria_id"])
+
+    # 7️⃣ Create prep table
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
+    # 8️⃣ Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -848,92 +856,53 @@ def create_ariadb_prep():
     print(f"✔ Created ariadb_prep ({len(df)} rows)")
 
 def create_workaccidents_prep():
-    print("=== Creating workaccidents_prep ===")
-
     src_table = DB_CONFIG["workaccidents_clean_table"]
     dst_table = DB_CONFIG["workaccidents_prep_table"]
-
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # ------------------------------------------------------------------
-    # 1. Normalize date
-    # ------------------------------------------------------------------
+    # 1️⃣ Rename date
     if "accident_date" in df.columns:
-        df["date"] = pd.to_datetime(
-            df["accident_date"],
-            errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
+        df["date"] = pd.to_datetime(df["accident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["accident_date"], inplace=True)
 
-    # ------------------------------------------------------------------
-    # 2. Normalize country
-    # ------------------------------------------------------------------
-    if "country" in df.columns:
-        df = normalize_country(df, "country")
+    # 2️⃣ Normalize country (default USA)
+    if "country" not in df.columns:
+        df["country"] = "USA"
+    df = normalize_country(df, "country")
 
-    # ------------------------------------------------------------------
-    # 3. Add fatality flag
-    #    Rule: if naturetitle exists and is not empty → fatality = 1
-    # ------------------------------------------------------------------
-    if "naturetitle" in df.columns:
-        df["fatality"] = df["naturetitle"].apply(
-            lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
-        )
-    else:
-        df["fatality"] = 0
+    # 3️⃣ Add fatality
+    df["fatality"] = df["naturetitle"].apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0) if "naturetitle" in df.columns else 0
 
-    # ------------------------------------------------------------------
-    # 4. Drop rows where all key columns are NULL
-    # ------------------------------------------------------------------
-    key_cols = [
-        "upa", "id", "date", "country", "employer", "city", "state",
-        "primary_naics", "event", "naturetitle"
-    ]
+    # 4️⃣ Drop rows where all key columns are null
+    key_cols = ["upa","id","date","country","employer","city","state","primary_naics","event","naturetitle"]
     existing_keys = [c for c in key_cols if c in df.columns]
     if existing_keys:
         df = df.dropna(how="all", subset=existing_keys)
 
-    # ------------------------------------------------------------------
-    # 5. Drop rows with only PK populated
-    # ------------------------------------------------------------------
+    # 5️⃣ Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "upa"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # ------------------------------------------------------------------
-    # ✅ 6. Deduplicate on PK
-    # ------------------------------------------------------------------
+    # 6️⃣ Deduplicate on PK
     if "upa" in df.columns:
         df = df.drop_duplicates(subset=["upa"])
 
-    # ------------------------------------------------------------------
-    # 7. Create prep table
-    # ------------------------------------------------------------------
+    # 7️⃣ Create prep table
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (upa)" if "upa" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
-    # ------------------------------------------------------------------
-    # 8. Insert data
-    # ------------------------------------------------------------------
+    # 8️⃣ Insert data
     insert_sql = f"""
-        INSERT INTO "{dst_table}" (
-            {", ".join([f'"{c}"' for c in df.columns])}
-        )
-        VALUES (
-            {", ".join(["%s"] * len(df.columns))}
-        )
+        INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
+        VALUES ({", ".join(["%s"] * len(df.columns))})
     """
-
     for _, row in df.iterrows():
-        cursor.execute(
-            insert_sql,
-            [None if pd.isna(v) else v for v in row.values]
-        )
+        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
 
     conn.commit()
     conn.close()
@@ -946,34 +915,42 @@ def create_fatalities_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1. Rename date
+    # 1️⃣ Rename date
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    # 2. Normalize country
+    # 2️⃣ Normalize country
+    if "country" not in df.columns:
+        df["country"] = "UNKNOWN"
     df = normalize_country(df, "country")
 
-    # 3. Add fatality
-    # If no_of_fatalities exists, use >0 else default to 1
+    # 3️⃣ Add fatality
     if "no_of_fatalities" in df.columns:
         df["fatality"] = df["no_of_fatalities"].apply(lambda x: 1 if pd.notna(x) and x > 0 else 0)
     else:
         df["fatality"] = 1
 
-    # 4. Drop rows where all key columns are null
+    # 4️⃣ Drop rows where all key columns are null
     key_cols = ["fatality_id","date","country","fatality"]
-    df = df.dropna(how="all", subset=key_cols)
+    df = df.dropna(how="all", subset=[c for c in key_cols if c in df.columns])
 
-    # 5. Drop rows with only fatality_id
-    df = df[df[key_cols[1:]].notna().any(axis=1)]
+    # 5️⃣ Drop rows with only PK populated
+    non_pk_cols = [c for c in key_cols if c != "fatality_id" and c in df.columns]
+    if non_pk_cols:
+        df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 6. Save to prep table
+    # 6️⃣ Deduplicate on PK
+    if "fatality_id" in df.columns:
+        df = df.drop_duplicates(subset=["fatality_id"])
+
+    # 7️⃣ Create prep table
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (fatality_id)" if "fatality_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
+    # 8️⃣ Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
