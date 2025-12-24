@@ -1017,8 +1017,11 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 # =====================================================================================
 # STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
 # =====================================================================================
+
 def create_star_schema():
     import pandas as pd
+    import numpy as np
+    from psycopg2.extras import execute_values
 
     conn = pg_connect()
     cur = conn.cursor()
@@ -1051,7 +1054,6 @@ def create_star_schema():
 
     # ==================================================
     # 3️⃣ ENSURE DATE AND COUNTRY ARE PRESENT
-    # Fill missing values with 'UNKNOWN'
     # ==================================================
     def enforce_date_country(df, source_name):
         before = len(df)
@@ -1072,24 +1074,14 @@ def create_star_schema():
     df_fatal = enforce_date_country(df_fatal, "fatal")
 
     # ==================================================
-    # 4️⃣ ORIGINAL DIM LOCATION (COUNTRY ONLY)
+    # 4️⃣ ORIGINAL DIM LOCATION
     # ==================================================
     df_orig_loc = pd.concat(
-        [
-            df_aria[["country"]],
-            df_work[["country"]],
-            df_fatal[["country"]],
-        ],
+        [df_aria[["country"]], df_work[["country"]], df_fatal[["country"]]],
         ignore_index=True
     ).drop_duplicates()
 
-    df_orig_loc["country"] = (
-        df_orig_loc["country"]
-        .fillna("UNKNOWN")
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
+    df_orig_loc["country"] = df_orig_loc["country"].fillna("UNKNOWN").astype(str).str.strip().str.upper()
 
     cur.execute("""
         CREATE TABLE original_dim_location (
@@ -1149,20 +1141,15 @@ def create_star_schema():
             date TEXT UNIQUE
         )
     """)
-    all_dates = pd.concat(
-        [df_aria[["date"]], df_work[["date"]], df_fatal[["date"]]],
-        ignore_index=True
-    ).drop_duplicates().sort_values("date")
+    all_dates = pd.concat([df_aria[["date"]], df_work[["date"]], df_fatal[["date"]]],
+                          ignore_index=True).drop_duplicates().sort_values("date")
 
     for _, r in all_dates.iterrows():
-        cur.execute(
-            "INSERT INTO dim_date (date) VALUES (%s)",
-            (r.date,)
-        )
+        cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date,))
     conn.commit()
 
     # ==================================================
-    # 7️⃣ DIM LOCATION (COUNTRY ONLY)
+    # 7️⃣ DIM LOCATION
     # ==================================================
     cur.execute("""
         CREATE TABLE dim_location (
@@ -1190,21 +1177,15 @@ def create_star_schema():
         frames = [df[[col]] for df in df_list if col in df.columns]
         if not frames:
             return
-
         df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
-
         cur.execute(f"""
             CREATE TABLE {table} (
                 {id_col} SERIAL PRIMARY KEY,
                 name TEXT UNIQUE
             )
         """)
-
         for v in df_dim[col]:
-            cur.execute(
-                f"INSERT INTO {table} (name) VALUES (%s)",
-                (v,)
-            )
+            cur.execute(f"INSERT INTO {table} (name) VALUES (%s)", (v,))
         conn.commit()
 
     create_dim([df_aria, df_work, df_fatal], "industry_code", "dim_industry", "industry_id")
@@ -1227,7 +1208,7 @@ def create_star_schema():
     """)
     conn.commit()
 
-    # Reload dimensions for merges
+    # Reload dimensions
     df_dim_date = pd.read_sql("SELECT * FROM dim_date", conn)
     df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
     df_dim_industry = pd.read_sql("SELECT * FROM dim_industry", conn)
@@ -1236,7 +1217,7 @@ def create_star_schema():
     df_dim_employer = pd.read_sql("SELECT * FROM dim_employer", conn)
 
     # ==================================================
-    # 10️⃣ Robust build_fact() ensuring all FK columns
+    # 10️⃣ Robust build_fact()
     # ==================================================
     def build_fact(df):
         f = df.copy()
@@ -1266,30 +1247,32 @@ def create_star_schema():
              "hazard_id", "accident_type_id", "industry_id"]
         ]
 
-    # Build fact table
-    df_fact = pd.concat(
-        [build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)],
-        ignore_index=True
-    )
+    df_fact = pd.concat([build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)],
+                        ignore_index=True)
 
     unknown_date_rows = (df_fact['date_id'] == 0).sum()
     unknown_location_rows = (df_fact['location_id'] == 0).sum()
     print(f"Rows with unknown date_id: {unknown_date_rows}, unknown location_id: {unknown_location_rows}")
 
-    # Insert facts
-    for _, r in df_fact.iterrows():
-        cur.execute(
-            """
-            INSERT INTO fact_accidents
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            tuple(r.values)
-        )
+    # ==================================================
+    # 11️⃣ Insert fact table using native Python types
+    # ==================================================
+    records = [
+        tuple(int(v) if isinstance(v, (np.integer, np.int64)) else
+              float(v) if isinstance(v, (np.floating, np.float64)) else
+              None if pd.isna(v) else v
+              for v in r.values)
+        for _, r in df_fact.iterrows()
+    ]
+
+    execute_values(cur,
+        "INSERT INTO fact_accidents VALUES %s",
+        records
+    )
 
     conn.commit()
     conn.close()
     print("✔ Star schema successfully created (country-level location)")
-
 
 def min_test_star_schema():
     """
