@@ -23,7 +23,7 @@ from etl_utils import (
 def task_create_project_db():
     """Create 'dataengdb' if it does not exist and update DB_CONFIG to point to it."""
     from etl_utils import create_database_and_set_config
-    create_database_and_set_config("dataengdb")
+    create_database_and_set_config("airflow")
 
 # -------------------------------------------------------------------------
 # DAG definition
