@@ -682,9 +682,11 @@ def create_workaccidents_clean():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
+    # Drop unnecessary column
     if "final_narrative" in df.columns:
         df.drop(columns=["final_narrative"], inplace=True)
 
+    # Normalize accident date
     date_col = "eventdate" if "eventdate" in df.columns else None
     if date_col:
         df["accident_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -694,6 +696,7 @@ def create_workaccidents_clean():
     # Normalize country
     df = normalize_country(df, "country")
 
+    # Select relevant columns
     selected_columns = [
         "id", "upa", "accident_date", "employer", "address1", "address2",
         "city", "state", "zip", "latitude", "longitude", "primary_naics",
@@ -704,11 +707,20 @@ def create_workaccidents_clean():
     ]
     df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
 
+    # ------------------------
+    # ✅ NEW FIX: Deduplicate by 'upa'
+    # ------------------------
+    if "upa" in df_clean.columns:
+        df_clean = df_clean.drop_duplicates(subset=["upa"])
+
+    # Create clean table
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
     col_defs = ", ".join([f'"{c}" TEXT' for c in df_clean.columns])
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
 
+    # Insert rows
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df_clean.columns])})
         VALUES ({", ".join(["%s"] * len(df_clean.columns))})
@@ -875,48 +887,40 @@ def create_workaccidents_prep():
 
     # ------------------------------------------------------------------
     # 4. Drop rows where all key columns are NULL
-    #    (workaccidents-specific keys ONLY)
     # ------------------------------------------------------------------
     key_cols = [
-        "id",
-        "date",
-        "country",
-        "employer",
-        "city",
-        "state",
-        "primary_naics",
-        "event",
-        "naturetitle"
+        "upa", "id", "date", "country", "employer", "city", "state",
+        "primary_naics", "event", "naturetitle"
     ]
-
     existing_keys = [c for c in key_cols if c in df.columns]
-
     if existing_keys:
         df = df.dropna(how="all", subset=existing_keys)
 
     # ------------------------------------------------------------------
-    # 5. Drop rows with only id populated
+    # 5. Drop rows with only PK populated
     # ------------------------------------------------------------------
-    non_id_keys = [c for c in existing_keys if c != "id"]
-
-    if non_id_keys:
-        df = df[df[non_id_keys].notna().any(axis=1)]
+    non_pk_cols = [c for c in existing_keys if c != "upa"]
+    if non_pk_cols:
+        df = df[df[non_pk_cols].notna().any(axis=1)]
 
     # ------------------------------------------------------------------
-    # 6. Create prep table
+    # ✅ 6. Deduplicate on PK
+    # ------------------------------------------------------------------
+    if "upa" in df.columns:
+        df = df.drop_duplicates(subset=["upa"])
+
+    # ------------------------------------------------------------------
+    # 7. Create prep table
     # ------------------------------------------------------------------
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
 
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-    pk = ", PRIMARY KEY (id)" if "id" in df.columns else ""
-
-    cursor.execute(
-        f'CREATE TABLE "{dst_table}" ({col_defs}{pk});'
-    )
+    pk = ", PRIMARY KEY (upa)" if "upa" in df.columns else ""
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
     # ------------------------------------------------------------------
-    # 7. Insert data
+    # 8. Insert data
     # ------------------------------------------------------------------
     insert_sql = f"""
         INSERT INTO "{dst_table}" (
@@ -935,8 +939,8 @@ def create_workaccidents_prep():
 
     conn.commit()
     conn.close()
-
     print(f"✔ Created workaccidents_prep ({len(df)} rows)")
+
 
 def create_fatalities_prep():
     src_table = DB_CONFIG["fatalities_clean_table"]
