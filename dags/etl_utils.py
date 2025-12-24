@@ -1127,21 +1127,20 @@ def create_star_schema():
     conn.commit()
 
     # ==================================================
-    # 5️⃣ DIM DATE
+    # 5️⃣ DIM DATE (TEXT, merge-safe YYYY-MM-DD strings)
     # ==================================================
     cur.execute("""
         CREATE TABLE dim_date (
             date_id SERIAL PRIMARY KEY,
-            date DATE UNIQUE
+            date TEXT UNIQUE
         )
     """)
-    # Collect unique dates from all prep tables
     all_dates = pd.concat([
-        df_aria[["date"]].rename(columns={"date":"date"}),
-        df_work[["date"]].rename(columns={"date":"date"}),
-        df_fatal[["date"]].rename(columns={"date":"date"})
+        df_aria[["date"]],
+        df_work[["date"]],
+        df_fatal[["date"]]
     ], ignore_index=True)
-    all_dates["date"] = pd.to_datetime(all_dates["date"], errors="coerce")
+    # Already standardized in prep tables as YYYY-MM-DD string
     all_dates = all_dates.dropna().drop_duplicates().sort_values("date").reset_index(drop=True)
     for _, r in all_dates.iterrows():
         cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date,))
@@ -1212,7 +1211,8 @@ def create_star_schema():
 
     def build_fact(df, date_col, location_cols=["municipality","department","country"]):
         df2 = df.copy()
-        df2[date_col] = pd.to_datetime(df2[date_col], errors="coerce")
+        # Ensure date column is string to match dim_date
+        df2[date_col] = df2[date_col].astype(str)
         df2 = df2.merge(df_dim_date[["date","date_id"]], left_on=date_col, right_on="date", how="left").drop(columns=["date"], errors="ignore")
         df2 = df2.merge(df_dim_location, on=location_cols, how="left")
         for col_map, df_dim_map, id_name in [
