@@ -53,11 +53,11 @@ ZIP_URL = "https://www.osha.gov/sites/default/files/January2015toMarch2025.zip"
 DB_CONFIG = {
     "host": "postgres",  # Important: Docker hostname
     "port": 5432,
-    "database": "airflow",
-    "dbname": "airflow",
+    "database": "dataengdb",
+    "dbname": "dataengdb",
     "user": "airflow",
     "password": "airflow",
-    "ariadb_table": "dataengdb",
+    "ariadb_table": "ariadb",
     "ariadb_clean_table": "ariadb_clean",
     "ariadb_prep_table": "ariadb_prep",
     "workaccidents_table": "workaccidents",
