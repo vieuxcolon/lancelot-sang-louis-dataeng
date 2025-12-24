@@ -15,6 +15,7 @@ from datetime import datetime
 import warnings
 import logging
 from time import sleep
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
@@ -84,6 +85,43 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
 
+def create_database_and_set_config(db_name: str):
+    """
+    Create the PostgreSQL database if it doesn't exist and update DB_CONFIG['database']
+    so all ETL scripts point to it automatically.
+
+    Args:
+        db_name (str): Name of the database to create and use.
+    """
+    # Connect to default DB first
+    conn = psycopg2.connect(
+        host=DB_CONFIG["host"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"],
+        database="postgres",  # default DB for initial connection
+        port=DB_CONFIG.get("port", 5432)
+    )
+    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    cur = conn.cursor()
+
+    # Check if database exists
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
+    if not cur.fetchone():
+        cur.execute(f"CREATE DATABASE {db_name};")
+        print(f"✔ Database '{db_name}' created.")
+    else:
+        print(f"✔ Database '{db_name}' already exists.")
+
+    # Grant privileges to user
+    cur.execute(f"GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {DB_CONFIG['user']};")
+    print(f"✔ Granted all privileges on '{db_name}' to '{DB_CONFIG['user']}'.")
+
+    cur.close()
+    conn.close()
+
+    # Update DB_CONFIG to point ETL scripts to the new database
+    DB_CONFIG["database"] = db_name
+    print(f"✔ DB_CONFIG['database'] updated to '{db_name}' for all ETL scripts.")
 
 def download_all_fatalities():
     """
@@ -1298,30 +1336,32 @@ def min_test_star_schema():
     return df_test
 
 def full_test_star_schema():
-    """
-    Full test: join fact_accidents with all dimension tables to verify data mapping.
-    """
+    import pandas as pd
+
     conn = pg_connect()
-    sql = """
-        SELECT 
-            f.date_id, d.date,
-            f.location_id, l.municipality, l.department, l.country, l.country_id,
-            f.employer_id, e.name AS employer_name,
-            f.hazard_id, h.name AS hazard_name,
-            f.accident_type_id, a.name AS accident_type_name,
-            f.industry_id, i.name AS industry_name
-        FROM fact_accidents f
-        LEFT JOIN dim_date d ON f.date_id = d.date_id
-        LEFT JOIN dim_location l ON f.location_id = l.location_id
-        LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
-        LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
-        LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-        LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
-        LIMIT 20;
+
+    query = """
+    SELECT 
+        f.date_id, d.date,
+        f.location_id, l.country, l.country_id,
+        f.employer_id, e.name AS employer_name,
+        f.hazard_id, h.name AS hazard_name,
+        f.accident_type_id, a.name AS accident_type_name,
+        f.industry_id, i.name AS industry_name
+    FROM fact_accidents f
+    LEFT JOIN dim_date d ON f.date_id = d.date_id
+    LEFT JOIN dim_location l ON f.location_id = l.location_id
+    LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
+    LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
+    LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
+    LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
+    LIMIT 20;
     """
-    df = pd.read_sql(sql, conn)
+
+    df_test = pd.read_sql(query, conn)
     conn.close()
 
-    print("\n=== Full Star Schema Test (20 rows) ===")
-    print(df)
-    return df
+    print("✔ Full star schema test query returned:")
+    print(df_test.head())
+    print(f"Total rows returned: {len(df_test)}")
+
