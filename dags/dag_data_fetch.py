@@ -7,14 +7,14 @@
 # =================== dag_data_fetch.py ===================
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
 from etl_utils import (
     create_database_and_set_config,
     create_ariadb_prep,
     create_workaccidents_prep,
     create_fatalities_prep,
-    create_star_schema,
-    DB_CONFIG
+    create_star_schema
 )
 
 # -------------------------------------------------------------------------
@@ -22,6 +22,7 @@ from etl_utils import (
 # -------------------------------------------------------------------------
 def task_create_project_db():
     """Create 'dataengdb' if it does not exist and update DB_CONFIG to point to it."""
+    from etl_utils import create_database_and_set_config
     create_database_and_set_config("dataengdb")
 
 # -------------------------------------------------------------------------
@@ -66,8 +67,15 @@ with DAG(
         python_callable=create_star_schema
     )
 
+    # 5️⃣ Trigger the next DAG: dag_data_clean
+    t5_trigger_data_clean = TriggerDagRunOperator(
+        task_id="trigger_dag_data_clean",
+        trigger_dag_id="dag_data_clean",
+        wait_for_completion=False,  # can be True if you want to wait for it
+        reset_dag_run=True,          # optional: reset previous DAG run if exists
+    )
+
     # ---------------------------------------------------------------------
     # Define DAG dependencies
     # ---------------------------------------------------------------------
-    t0_create_db >> [t1_create_ariadb_prep, t2_create_workaccidents_prep, t3_create_fatalities_prep] >> t4_create_star_schema
-
+    t0_create_db >> [t1_create_ariadb_prep, t2_create_workaccidents_prep, t3_create_fatalities_prep] >> t4_create_star_schema >> t5_trigger_data_clean
