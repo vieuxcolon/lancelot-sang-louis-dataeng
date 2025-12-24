@@ -4,8 +4,6 @@
 # the resulting clean datasets include ariadb_clean, workaccidents_clean and fatalities_clean which are loaded into clean database tables
 # =====================================================================================================================================================
 
-# =================== dag_data_clean.py ===================
-
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
