@@ -4,7 +4,7 @@
 # the resulting clean datasets include ariadb_clean, workaccidents_clean and fatalities_clean which are loaded into clean database tables
 # =====================================================================================================================================================
 
-# =================== dag_data_clean.py ===============================
+# =================== dag_data_clean.py ===================
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -24,7 +24,7 @@ with DAG(
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["clean", "staging"]
+    tags=["clean"]
 ) as dag:
 
     t1 = PythonOperator(
@@ -45,7 +45,9 @@ with DAG(
     trigger_prep = TriggerDagRunOperator(
         task_id="trigger_data_prep",
         trigger_dag_id="dag_data_prep",
-        wait_for_completion=True
+        wait_for_completion=True,
+        allowed_states=["success"],
+        failed_states=["failed"]
     )
 
     chain([t1, t2, t3], trigger_prep)
