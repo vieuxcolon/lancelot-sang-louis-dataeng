@@ -1282,11 +1282,13 @@ def create_dimensions_and_fact():
 
 def create_star_schema():
     import pandas as pd
+    from etl_utils import pg_connect, DB_CONFIG
+
     conn = pg_connect()
     cur = conn.cursor()
 
     # ==================================================
-    # 1️⃣ DROP OLD TABLES (only if exist)
+    # 1️⃣ DROP OLD TABLES
     # ==================================================
     tables_to_drop = [
         "fact_accidents",
@@ -1312,26 +1314,35 @@ def create_star_schema():
     df_fatal = pd.read_sql(f'SELECT * FROM "{DB_CONFIG["fatalities_prep_table"]}"', conn)
 
     # ==================================================
-    # 3️⃣ CREATE ORIGINAL DIM LOCATION
+    # 3️⃣ ORIGINAL DIM LOCATION (COUNTRY ONLY)
     # ==================================================
-    frames = []
-    frames.append(df_aria[["municipality", "department", "country"]])
-    frames.append(df_work[["municipality", "department", "country"]])
-    frames.append(df_fatal[["municipality", "department", "country"]])
+    df_orig_loc = pd.concat(
+        [
+            df_aria[["country"]],
+            df_work[["country"]],
+            df_fatal[["country"]],
+        ],
+        ignore_index=True
+    ).drop_duplicates()
 
-    df_orig_loc = pd.concat(frames, ignore_index=True).drop_duplicates().fillna("UNKNOWN")
-    df_orig_loc = df_orig_loc.applymap(lambda x: str(x).strip().upper())
+    df_orig_loc["country"] = (
+        df_orig_loc["country"]
+        .fillna("UNKNOWN")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
 
     cur.execute("""
         CREATE TABLE original_dim_location (
-            municipality TEXT,
-            department TEXT,
             country TEXT
         )
     """)
     for _, r in df_orig_loc.iterrows():
-        cur.execute("INSERT INTO original_dim_location VALUES (%s,%s,%s)",
-                    (r.municipality, r.department, r.country))
+        cur.execute(
+            "INSERT INTO original_dim_location (country) VALUES (%s)",
+            (r.country,)
+        )
     conn.commit()
 
     # ==================================================
@@ -1353,6 +1364,7 @@ def create_star_schema():
         (5,'Canada','CA'),
         (6,'UNKNOWN','XX')
     """)
+
     cur.execute("""
         CREATE TABLE country_synonym (
             synonym TEXT PRIMARY KEY,
@@ -1380,50 +1392,24 @@ def create_star_schema():
             date TEXT UNIQUE
         )
     """)
-    all_dates = pd.concat([
-        df_aria[["date"]],
-        df_work[["date"]],
-        df_fatal[["date"]]
-    ], ignore_index=True)
-    all_dates = all_dates.dropna().drop_duplicates().sort_values("date").reset_index(drop=True)
+    all_dates = pd.concat(
+        [df_aria[["date"]], df_work[["date"]], df_fatal[["date"]]],
+        ignore_index=True
+    ).dropna().drop_duplicates().sort_values("date")
+
     for _, r in all_dates.iterrows():
-        cur.execute("INSERT INTO dim_date (date) VALUES (%s)", (r.date,))
+        cur.execute(
+            "INSERT INTO dim_date (date) VALUES (%s)",
+            (r.date,)
+        )
     conn.commit()
 
     # ==================================================
-    # 6️⃣ OTHER DIM TABLES (POPULATE FROM PREP TABLES)
-    # ==================================================
-  
-
-    def create_dim_from_column(df_list, column_name, table_name):
-        df = pd.concat([df_list[0][[column_name]],
-                        df_list[1][[column_name]],
-                        df_list[2][[column_name]]], ignore_index=True)
-        df = df.dropna().drop_duplicates()
-        df = df[df[column_name] != "UNKNOWN"].reset_index(drop=True)
-        cur.execute(f"""
-            CREATE TABLE {table_name} (
-                {table_name[:-4]}_id SERIAL PRIMARY KEY,
-                name TEXT UNIQUE
-            )
-        """)
-        for val in df[column_name]:
-            cur.execute(f"INSERT INTO {table_name} (name) VALUES (%s)", (val,))
-        conn.commit()
-
-    create_dim_from_column([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard")
-    create_dim_from_column([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type")
-    create_dim_from_column([df_aria, df_work, df_fatal], "industry_code", "dim_industry")
-    create_dim_from_column([df_aria, df_work, df_fatal], "employer", "dim_employer")
-
-    # ==================================================
-    # 7️⃣ DIM LOCATION
+    # 6️⃣ DIM LOCATION (COUNTRY ONLY)
     # ==================================================
     cur.execute("""
         CREATE TABLE dim_location (
             location_id INT PRIMARY KEY,
-            municipality TEXT,
-            department TEXT,
             country TEXT,
             country_id INT REFERENCES dim_country(country_id)
         )
@@ -1431,111 +1417,42 @@ def create_star_schema():
     cur.execute("""
         INSERT INTO dim_location
         SELECT
-            ROW_NUMBER() OVER (ORDER BY municipality, department, country)::INT,
-            municipality,
-            department,
-            country,
-            COALESCE(cs.country_id,6)
+            ROW_NUMBER() OVER (ORDER BY o.country)::INT,
+            o.country,
+            COALESCE(cs.country_id, 6)
         FROM original_dim_location o
         LEFT JOIN country_synonym cs
             ON o.country = cs.synonym
     """)
     conn.commit()
 
-    # ----------------------------------------------------------
-    # 1️⃣ DIM INDUSTRY
-    # ----------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE dim_industry (
-            industry_id SERIAL PRIMARY KEY,
-            name TEXT
-        );
-    """)
-    # Insert all distinct industry codes from prep tables
-    industry_frames = []
-    if "industry_code" in df_aria.columns:
-        industry_frames.append(df_aria[["industry_code"]].rename(columns={"industry_code":"name"}))
-    if "industry_code" in df_work.columns:
-        industry_frames.append(df_work[["industry_code"]].rename(columns={"industry_code":"name"}))
-    if "industry_code" in df_fatal.columns:
-        industry_frames.append(df_fatal[["industry_code"]].rename(columns={"industry_code":"name"}))
+    # ==================================================
+    # 7️⃣ OTHER DIMENSIONS
+    # ==================================================
+    def create_dim(df_list, col, table):
+        frames = [df[[col]] for df in df_list if col in df.columns]
+        if not frames:
+            return
+        df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
 
-    if industry_frames:
-        df_industry = pd.concat(industry_frames, ignore_index=True).drop_duplicates().dropna()
-        for _, r in df_industry.iterrows():
-            cur.execute("INSERT INTO dim_industry (name) VALUES (%s)", (r.name,))
-    conn.commit()
+        cur.execute(f"""
+            CREATE TABLE {table} (
+                {table[:-4]}_id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE
+            )
+        """)
+        for v in df_dim[col]:
+            cur.execute(
+                f"INSERT INTO {table} (name) VALUES (%s)",
+                (v,)
+            )
+        conn.commit()
 
-    # ----------------------------------------------------------
-    # 2️⃣ DIM ACCIDENT TYPE
-    # ----------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE dim_accident_type (
-            accident_type_id SERIAL PRIMARY KEY,
-            name TEXT
-        );
-    """)
-    acc_type_frames = []
-    if "accident_type" in df_aria.columns:
-        acc_type_frames.append(df_aria[["accident_type"]])
-    if "accident_type" in df_work.columns:
-        acc_type_frames.append(df_work[["accident_type"]])
-    if "accident_type" in df_fatal.columns:
-        acc_type_frames.append(df_fatal[["accident_type"]])
+    create_dim([df_aria, df_work, df_fatal], "industry_code", "dim_industry")
+    create_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type")
+    create_dim([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard")
+    create_dim([df_aria, df_work, df_fatal], "employer", "dim_employer")
 
-    if acc_type_frames:
-        df_acc_type = pd.concat(acc_type_frames, ignore_index=True).drop_duplicates().dropna()
-        for _, r in df_acc_type.iterrows():
-            cur.execute("INSERT INTO dim_accident_type (name) VALUES (%s)", (r.accident_type,))
-    conn.commit()
-
-    # ----------------------------------------------------------
-    # 3️⃣ DIM HAZARD
-    # ----------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE dim_hazard (
-            hazard_id SERIAL PRIMARY KEY,
-            hazard_class TEXT
-        );
-    """)
-    hazard_frames = []
-    if "hazard_class" in df_aria.columns:
-        hazard_frames.append(df_aria[["hazard_class"]])
-    if "hazard_class" in df_work.columns:
-        hazard_frames.append(df_work[["hazard_class"]])
-    if "hazard_class" in df_fatal.columns:
-        hazard_frames.append(df_fatal[["hazard_class"]])
-
-    if hazard_frames:
-        df_hazard = pd.concat(hazard_frames, ignore_index=True).drop_duplicates().dropna()
-        for _, r in df_hazard.iterrows():
-            cur.execute("INSERT INTO dim_hazard (hazard_class) VALUES (%s)", (r.hazard_class,))
-    conn.commit()
-
-    # ----------------------------------------------------------
-    # 4️⃣ DIM EMPLOYER
-    # ----------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE dim_employer (
-            employer_id SERIAL PRIMARY KEY,
-            name TEXT
-        );
-    """)
-    employer_frames = []
-    if "employer" in df_aria.columns:
-        employer_frames.append(df_aria[["employer"]].rename(columns={"employer":"name"}))
-    if "employer" in df_work.columns:
-        employer_frames.append(df_work[["employer"]].rename(columns={"employer":"name"}))
-    if "employer" in df_fatal.columns:
-        employer_frames.append(df_fatal[["employer"]].rename(columns={"employer":"name"}))
-
-    if employer_frames:
-        df_employer = pd.concat(employer_frames, ignore_index=True).drop_duplicates().dropna()
-        for _, r in df_employer.iterrows():
-            cur.execute("INSERT INTO dim_employer (name) VALUES (%s)", (r.name,))
-    conn.commit()
-
- 
     # ==================================================
     # 8️⃣ FACT TABLE
     # ==================================================
@@ -1551,53 +1468,56 @@ def create_star_schema():
     """)
     conn.commit()
 
-    # Load dims for mapping
-    df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
     df_dim_date = pd.read_sql("SELECT * FROM dim_date", conn)
+    df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
     df_dim_industry = pd.read_sql("SELECT * FROM dim_industry", conn)
     df_dim_accident_type = pd.read_sql("SELECT * FROM dim_accident_type", conn)
     df_dim_hazard = pd.read_sql("SELECT * FROM dim_hazard", conn)
     df_dim_employer = pd.read_sql("SELECT * FROM dim_employer", conn)
 
-    # ==================================================
-    # Build fact helper
-    # ==================================================
     def build_fact(df):
-        df2 = df.copy()
-        df2 = df2.merge(df_dim_date, left_on="date", right_on="date", how="left")
-        df2 = df2.merge(df_dim_location, on=["municipality","department","country"], how="left")
-        for col_map, df_dim_map, id_name in [
+        f = df.copy()
+        f = f.merge(df_dim_date, on="date", how="left")
+        f = f.merge(df_dim_location, on="country", how="left")
+
+        for src, dim, id_col in [
             ("industry_code", df_dim_industry, "industry_id"),
             ("accident_type", df_dim_accident_type, "accident_type_id"),
             ("hazard_class", df_dim_hazard, "hazard_id"),
-            ("employer", df_dim_employer, "employer_id")
+            ("employer", df_dim_employer, "employer_id"),
         ]:
-            if col_map in df2.columns:
-                df2 = df2.merge(df_dim_map, left_on=col_map, right_on="name", how="left")
-        for id_col in ["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]:
-            if id_col in df2.columns:
-                df2[id_col] = df2[id_col].fillna(0).astype(int)
-        return df2[["date_id","location_id","employer_id","hazard_id","accident_type_id","industry_id"]]
+            if src in f.columns:
+                f = f.merge(dim, left_on=src, right_on="name", how="left")
 
-    # ==================================================
-    # 9️⃣ POPULATE FACT TABLE
-    # ==================================================
-    df_fact_all = pd.concat([
-        build_fact(df_aria),
-        build_fact(df_work),
-        build_fact(df_fatal)
-    ], ignore_index=True)
+        for c in [
+            "date_id", "location_id", "employer_id",
+            "hazard_id", "accident_type_id", "industry_id"
+        ]:
+            f[c] = f[c].fillna(0).astype(int)
 
-    insert_sql = """
-        INSERT INTO fact_accidents (date_id, location_id, employer_id, hazard_id, accident_type_id, industry_id)
-        VALUES (%s,%s,%s,%s,%s,%s)
-    """
-    for _, r in df_fact_all.iterrows():
-        cur.execute(insert_sql, tuple(r.values))
+        return f[
+            ["date_id", "location_id", "employer_id",
+             "hazard_id", "accident_type_id", "industry_id"]
+        ]
+
+    df_fact = pd.concat(
+        [build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)],
+        ignore_index=True
+    )
+
+    for _, r in df_fact.iterrows():
+        cur.execute(
+            """
+            INSERT INTO fact_accidents
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            tuple(r.values)
+        )
 
     conn.commit()
     conn.close()
-    print("✔ Star schema successfully created from prep tables!")
+    print("✔ Star schema successfully created (country-level location)")
+
 
 def min_test_star_schema():
     """
