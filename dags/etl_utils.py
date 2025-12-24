@@ -623,7 +623,6 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
     df[col] = df[col].replace(country_map)
     return df
 
-
 # 1️⃣ ARIADB
 def create_ariadb_clean():
     src_table = DB_CONFIG["ariadb_table"]
@@ -631,6 +630,7 @@ def create_ariadb_clean():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
+    # Updated column mapping
     col_map = {
         "numéro_aria": "aria_id",
         "titre": "title",
@@ -641,28 +641,33 @@ def create_ariadb_clean():
         "départment": "department",
         "commune": "municipality",
         "type_d'accident": "accident_type",
-        "type_évènement": "event_type",
-        "classe_de_danger_clp": "hazard_class",
+        "type_évènement": "hazard_class",  # ✅ New mapping
+        # "classe_de_danger_clp": "hazard_class",  # removed
     }
 
+    # Keep only existing columns and rename them
     existing = [c for c in col_map if c in df.columns]
     df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
 
+    # Normalize date
     if "incident_date" in df.columns:
         df["incident_date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
+    # Deduplicate on primary key
     if "aria_id" in df.columns:
         df.drop_duplicates(subset=["aria_id"], inplace=True)
 
     # Normalize country
     df = normalize_country(df, "country")
 
+    # Create clean table
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
+    # Insert rows
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -673,7 +678,6 @@ def create_ariadb_clean():
     conn.commit()
     conn.close()
     print(f"✔ Created ariadb_clean ({len(df)} rows)")
-
 
 # 2️⃣ WORKACCIDENTS
 def create_workaccidents_clean():
@@ -804,7 +808,6 @@ def normalize_country(df, column_name):
 
     df[column_name] = df[column_name].apply(normalize_value)
     return df
-
 def create_ariadb_prep():
     src_table = DB_CONFIG["ariadb_clean_table"]
     dst_table = DB_CONFIG["ariadb_prep_table"]
@@ -820,15 +823,22 @@ def create_ariadb_prep():
     if "country" in df.columns:
         df = normalize_country(df, "country")
 
-    # 3️⃣ Add fatality
-    df["fatality"] = df["accident_type"].apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0)
+    # 3️⃣ Add fatality flag based on hazard_class
+    if "hazard_class" in df.columns:
+        df["fatality"] = df["hazard_class"].apply(
+            lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
+        )
+    else:
+        df["fatality"] = 0
 
     # 4️⃣ Drop rows where all key columns are null
-    key_cols = ["aria_id","date","country","department","municipality","accident_type","hazard_class","industry_code"]
-    df = df.dropna(how="all", subset=[c for c in key_cols if c in df.columns])
+    key_cols = ["aria_id","date","country","department","municipality","hazard_class","industry_code"]
+    existing_keys = [c for c in key_cols if c in df.columns]
+    if existing_keys:
+        df = df.dropna(how="all", subset=existing_keys)
 
     # 5️⃣ Drop rows with only PK populated
-    non_pk_cols = [c for c in key_cols if c != "aria_id" and c in df.columns]
+    non_pk_cols = [c for c in existing_keys if c != "aria_id"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
@@ -854,6 +864,7 @@ def create_ariadb_prep():
     conn.commit()
     conn.close()
     print(f"✔ Created ariadb_prep ({len(df)} rows)")
+
 
 def create_workaccidents_prep():
     src_table = DB_CONFIG["workaccidents_clean_table"]
