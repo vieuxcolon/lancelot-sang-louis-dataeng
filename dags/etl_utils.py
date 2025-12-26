@@ -5,11 +5,15 @@
 
 # etl_utils.py well formatted and self-documented.
 
+import csv
+from typing import List, Dict
+from pymongo import MongoClient
 import os
+import io
+from io import StringIO, BytesIO
 import pandas as pd
 import psycopg2
 import requests
-from io import StringIO, BytesIO
 from zipfile import ZipFile
 from datetime import datetime
 import warnings
@@ -84,6 +88,101 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY10.csv",
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
+
+
+# ---------------------------------------------------------------------
+# MongoDB configuration (Docker-safe)
+# ---------------------------------------------------------------------
+MONGO_HOST = os.getenv("MONGO_HOST", "mongo")
+MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
+MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME")
+MONGO_PASSWORD = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
+
+MONGO_DB = "raw_data"
+MONGO_COLLECTION = "ariadb"
+
+# ---------------------------------------------------------------------
+# MongoDB connection
+# ---------------------------------------------------------------------
+def get_mongo_client():
+    if MONGO_USER and MONGO_PASSWORD:
+        uri = (
+            f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}"
+            f"@{MONGO_HOST}:{MONGO_PORT}/"
+        )
+    else:
+        uri = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/"
+
+    return MongoClient(uri)
+
+# ---------------------------------------------------------------------
+# Step 1: Download CSV from source
+# ---------------------------------------------------------------------
+def download_csv_from_web(url: str) -> List[Dict]:
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    csv_buffer = io.StringIO(response.text)
+    reader = csv.DictReader(csv_buffer, delimiter=";")
+
+    rows = list(reader)
+    print(f"Downloaded {len(rows)} rows from ARIADB source")
+
+    return rows
+
+# ---------------------------------------------------------------------
+# Step 2: Load CSV rows into MongoDB
+# ---------------------------------------------------------------------
+def load_rows_into_mongo(rows: List[Dict]):
+    client = get_mongo_client()
+    collection = client[MONGO_DB][MONGO_COLLECTION]
+
+    # Idempotent load
+    collection.delete_many({})
+    collection.insert_many(rows)
+
+    print(f"Inserted {len(rows)} rows into MongoDB ({MONGO_DB}.{MONGO_COLLECTION})")
+
+# ---------------------------------------------------------------------
+# Step 3: Export MongoDB collection to CSV on disk
+# ---------------------------------------------------------------------
+def export_mongo_to_csv(filename: str):
+    client = get_mongo_client()
+    collection = client[MONGO_DB][MONGO_COLLECTION]
+
+    cursor = collection.find({}, {"_id": 0})
+    rows = list(cursor)
+
+    if not rows:
+        raise RuntimeError("MongoDB collection is empty — cannot export CSV")
+
+    output_path = os.path.join(DATA_DIR, filename)
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=rows[0].keys(),
+            delimiter=";"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"ARIADB CSV written to {output_path}")
+
+# ---------------------------------------------------------------------
+# Public API — REPLACES download_csv
+# ---------------------------------------------------------------------
+def download_ariadb_via_mongo(url: str, output_filename: str):
+    """
+    Replacement for:
+        download_csv(url, "ariadb.csv")
+
+    Flow:
+        source → MongoDB → CSV on disk (DATA_DIR)
+    """
+    rows = download_csv_from_web(url)
+    load_rows_into_mongo(rows)
+    export_mongo_to_csv(output_filename)
 
 def create_database_and_set_config(db_name: str):
     """
