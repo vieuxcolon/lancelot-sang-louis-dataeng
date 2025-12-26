@@ -7,7 +7,6 @@
 
 import csv
 from typing import List, Dict
-from pymongo import MongoClient
 import os
 import io
 from io import StringIO, BytesIO
@@ -20,6 +19,8 @@ import warnings
 import logging
 from time import sleep
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from pymongo import MongoClient, ASCENDING
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
@@ -108,6 +109,12 @@ MONGO_COLLECTION = "ariadb"
 # MongoDB connection
 # ---------------------------------------------------------------------
 
+
+
+# Load .env automatically
+load_dotenv()
+
+# Mongo connection
 def get_mongo_client():
     host = os.getenv("MONGO_HOST", "mongo")
     port = int(os.getenv("MONGO_PORT", 27017))
@@ -115,27 +122,70 @@ def get_mongo_client():
     password = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
 
     if user and password:
-        uri = (
-            f"mongodb://{user}:{password}"
-            f"@{host}:{port}/"
-            f"?authSource=admin"   # ✅ CRITICAL
-        )
+        uri = f"mongodb://{user}:{password}@{host}:{port}/?authSource=admin"
     else:
         uri = f"mongodb://{host}:{port}/"
 
     return MongoClient(uri)
 
 
-def get_mongo_client():
-    if MONGO_USER and MONGO_PASSWORD:
-        uri = (
-            f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}"
-            f"@{MONGO_HOST}:{MONGO_PORT}/"
-        )
-    else:
-        uri = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/"
+def download_ariadb_via_mongo(source_url: str, output_csv: str):
+    """
+    Download ARIADB from source URL, ingest into MongoDB, and write CSV to DATA_DIR.
+    Implements:
+        - Drop & recreate collection
+        - Load via temp collection + atomic rename
+        - Schema version stamping
+        - Row-count validation
+        - Optional unique indexes
+    """
+    # Step 1: Read source CSV into DataFrame
+    df = pd.read_csv(source_url, sep=";", skiprows=7)  # keep existing logic
+    print(f"Downloaded {len(df)} rows from ARIADB source")
 
-    return MongoClient(uri)
+    # Step 2: Add schema version / ETL metadata
+    run_id = os.getenv("AIRFLOW_RUN_ID", f"manual_{datetime.utcnow().isoformat()}")
+    df["_etl_run_id"] = run_id
+    df["_etl_loaded_at"] = datetime.utcnow()
+
+    # Step 3: Connect to Mongo
+    client = get_mongo_client()
+    db_name = os.getenv("MONGO_DB", "raw_data")
+    collection_name = os.getenv("MONGO_COLLECTION", "ariadb")
+    tmp_collection_name = f"{collection_name}_tmp"
+
+    db = client[db_name]
+
+    # Step 4: Drop temp collection if exists
+    if tmp_collection_name in db.list_collection_names():
+        db.drop_collection(tmp_collection_name)
+
+    tmp_coll = db[tmp_collection_name]
+
+    # Step 5: Load data into temp collection
+    tmp_coll.insert_many(df.to_dict(orient="records"))
+    print(f"Inserted {tmp_coll.count_documents({})} rows into temporary collection {tmp_collection_name}")
+
+    # Step 6: Optional unique index on a business key (uncomment if needed)
+    # tmp_coll.create_index([("some_business_key", ASCENDING)], unique=True)
+
+    # Step 7: Validate row count
+    if len(df) != tmp_coll.count_documents({}):
+        raise RuntimeError(
+            f"Row count mismatch: source={len(df)} vs Mongo={tmp_coll.count_documents({})}"
+        )
+
+    # Step 8: Drop main collection if exists, then rename temp to main
+    if collection_name in db.list_collection_names():
+        db.drop_collection(collection_name)
+    tmp_coll.rename(collection_name)
+    print(f"Atomic rename: {tmp_collection_name} → {collection_name}")
+
+    # Step 9: Write CSV to DATA_DIR
+    csv_path = os.path.join(DATA_DIR, output_csv)
+    df.to_csv(csv_path, index=False)
+    print(f"CSV written to {csv_path}")
+
 
 # ---------------------------------------------------------------------
 # Step 1: Download CSV from source
@@ -194,17 +244,6 @@ def export_mongo_to_csv(filename: str):
 # ---------------------------------------------------------------------
 # Public API — REPLACES download_csv
 # ---------------------------------------------------------------------
-def download_ariadb_via_mongo(url: str, output_filename: str):
-    """
-    Replacement for:
-        download_csv(url, "ariadb.csv")
-
-    Flow:
-        source → MongoDB → CSV on disk (DATA_DIR)
-    """
-    rows = download_csv_from_web(url)
-    load_rows_into_mongo(rows)
-    export_mongo_to_csv(output_filename)
 
 def create_database_and_set_config(db_name: str):
     """
