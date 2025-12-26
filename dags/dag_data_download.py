@@ -10,14 +10,13 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from datetime import datetime
 
 from etl_utils import (
-    download_csv,
-    download_all_fatalities,
-    download_and_extract_zip,
-    CSV_URL
-)
+    download_csv, download_all_fatalities, download_and_extract_zip, download_all_fatalities, CSV_URL )
 
 def download_ariadb():
-    download_csv(CSV_URL, "ariadb.csv")
+    """
+    Source → MongoDB → CSV (DATA_DIR/ariadb.csv)
+    """
+    download_ariadb_via_mongo(CSV_URL, "ariadb.csv")
 
 def download_fatalities():
     download_all_fatalities()
