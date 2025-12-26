@@ -5,6 +5,8 @@
 
 # etl_utils.py well formatted and self-documented.
 
+import sys
+import traceback
 import csv
 from typing import List, Dict
 import os
@@ -21,6 +23,8 @@ from time import sleep
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from pymongo import MongoClient, ASCENDING
 from dotenv import load_dotenv
+from datetime import datetime
+
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
@@ -90,102 +94,192 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
 
+# ---------------------------------------------------------------------
+# Ensure required environment variables exist
+# ---------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# MongoDB configuration (Docker-safe)
-# ---------------------------------------------------------------------
-# ---------------------------------------------------------------------
-# MongoDB configuration (Docker-safe)
-# ---------------------------------------------------------------------
-MONGO_HOST = os.getenv("MONGO_HOST", "mongo")
+# ============================================================================
+# Environment validation
+# Ensure all required MongoDB-related environment variables are available
+# ============================================================================
+required_vars = [
+    "MONGO_HOST",
+    "MONGO_PORT",
+    "MONGO_INITDB_ROOT_USERNAME",
+    "MONGO_INITDB_ROOT_PASSWORD",
+    "MONGO_DB",
+    "MONGO_COLLECTION",
+]
+for var in required_vars:
+    if os.getenv(var) is None:
+        raise RuntimeError(f"[ERROR] Required environment variable '{var}' is missing")
+
+# ============================================================================
+# Environment configuration
+# Read MongoDB connection details and runtime configuration
+# ============================================================================
+MONGO_HOST = os.getenv("MONGO_HOST")
 MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
 MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME")
 MONGO_PASSWORD = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
+MONGO_DB = os.getenv("MONGO_DB")
+MONGO_COLLECTION = os.getenv("MONGO_COLLECTION")
 
-MONGO_DB = "raw_data"
-MONGO_COLLECTION = "ariadb"
+# DATA_DIR is shared across containers via Docker volume
+DATA_DIR = os.getenv("DATA_DIR", "/opt/airflow/data")  # Default if not explicitly set
 
-# ---------------------------------------------------------------------
-# MongoDB connection
-# ---------------------------------------------------------------------
-
-
-
-# Load .env automatically
-load_dotenv()
-
-# Mongo connection
+# ============================================================================
+# MongoDB connection helper
+# Centralized, authenticated MongoDB client creation with connectivity check
+# ============================================================================
 def get_mongo_client():
-    host = os.getenv("MONGO_HOST", "mongo")
-    port = int(os.getenv("MONGO_PORT", 27017))
-    user = os.getenv("MONGO_INITDB_ROOT_USERNAME")
-    password = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
+    uri = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/"
+    print(f"[DEBUG] Connecting to MongoDB with URI: {uri}")
+    try:
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        client.admin.command("ping")
+        print("✔ Connected to MongoDB")
+        return client
+    except Exception:
+        print("[ERROR] Cannot connect to MongoDB")
+        traceback.print_exc()
+        sys.exit(1)
 
-    if user and password:
-        uri = f"mongodb://{user}:{password}@{host}:{port}/?authSource=admin"
-    else:
-        uri = f"mongodb://{host}:{port}/"
-
-    return MongoClient(uri)
-
-
-def download_ariadb_via_mongo(source_url: str, output_csv: str):
-    """
-    Download ARIADB from source URL, ingest into MongoDB, and write CSV to DATA_DIR.
-    Implements:
-        - Drop & recreate collection
-        - Load via temp collection + atomic rename
-        - Schema version stamping
-        - Row-count validation
-        - Optional unique indexes
-    """
-    # Step 1: Read source CSV into DataFrame
-    df = pd.read_csv(source_url, sep=";", skiprows=7)  # keep existing logic
-    print(f"Downloaded {len(df)} rows from ARIADB source")
-
-    # Step 2: Add schema version / ETL metadata
-    run_id = os.getenv("AIRFLOW_RUN_ID", f"manual_{datetime.utcnow().isoformat()}")
-    df["_etl_run_id"] = run_id
-    df["_etl_loaded_at"] = datetime.utcnow()
-
-    # Step 3: Connect to Mongo
+# ============================================================================
+# MongoDB → CSV export utility
+# Reads an entire MongoDB collection and writes it to a CSV file
+# ============================================================================
+def export_mongo_to_csv(db_name: str, collection_name: str, output_file: str):
     client = get_mongo_client()
-    db_name = os.getenv("MONGO_DB", "raw_data")
-    collection_name = os.getenv("MONGO_COLLECTION", "ariadb")
-    tmp_collection_name = f"{collection_name}_tmp"
-
     db = client[db_name]
-
-    # Step 4: Drop temp collection if exists
-    if tmp_collection_name in db.list_collection_names():
-        db.drop_collection(tmp_collection_name)
-
-    tmp_coll = db[tmp_collection_name]
-
-    # Step 5: Load data into temp collection
-    tmp_coll.insert_many(df.to_dict(orient="records"))
-    print(f"Inserted {tmp_coll.count_documents({})} rows into temporary collection {tmp_collection_name}")
-
-    # Step 6: Optional unique index on a business key (uncomment if needed)
-    # tmp_coll.create_index([("some_business_key", ASCENDING)], unique=True)
-
-    # Step 7: Validate row count
-    if len(df) != tmp_coll.count_documents({}):
-        raise RuntimeError(
-            f"Row count mismatch: source={len(df)} vs Mongo={tmp_coll.count_documents({})}"
+    try:
+        print(
+            f"[DEBUG] Exporting MongoDB collection "
+            f"'{db_name}.{collection_name}' to CSV '{output_file}'"
         )
+        cursor = db[collection_name].find()
+        df = pd.DataFrame(list(cursor))
 
-    # Step 8: Drop main collection if exists, then rename temp to main
-    if collection_name in db.list_collection_names():
-        db.drop_collection(collection_name)
-    tmp_coll.rename(collection_name)
-    print(f"Atomic rename: {tmp_collection_name} → {collection_name}")
+        # Remove MongoDB internal ID field
+        if "_id" in df.columns:
+            df.drop(columns=["_id"], inplace=True)
 
-    # Step 9: Write CSV to DATA_DIR
-    csv_path = os.path.join(DATA_DIR, output_csv)
-    df.to_csv(csv_path, index=False)
-    print(f"CSV written to {csv_path}")
+        df.to_csv(output_file, index=False)
+        print(f"✔ Collection exported successfully to {output_file}, rows: {len(df)}")
+    except Exception:
+        print("[ERROR] Failed to export MongoDB collection to CSV")
+        traceback.print_exc()
+    finally:
+        client.close()
+        print("✔ MongoDB connection closed after export")
 
+# ============================================================================
+# Main ETL function
+# Source CSV (URL) → MongoDB (atomic load) → CSV on disk
+# ============================================================================
+def download_ariadb_via_mongo(url: str, output_filename: str):
+    """
+    Replacement for download_csv.
+
+    End-to-end flow:
+        Source CSV (URL)
+            → MongoDB temp collection
+            → Atomic rename to main collection
+            → Export back to CSV (DATA_DIR)
+    """
+    print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
+
+    # ------------------------------------------------------------------------
+    # Step 1: Download CSV from source URL
+    # Handles encoding fallback for real-world datasets
+    # ------------------------------------------------------------------------
+    try:
+        print(f"[DEBUG] Attempting to read CSV from URL '{url}' with UTF-8 encoding")
+        df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
+        print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
+    except UnicodeDecodeError:
+        print("[WARNING] UTF-8 decoding failed, trying latin1 encoding...")
+        try:
+            df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
+            print(f"[DEBUG] CSV loaded with latin1 encoding, rows: {len(df)}")
+        except Exception:
+            print("[ERROR] Failed to load CSV with latin1 encoding")
+            traceback.print_exc()
+            sys.exit(1)
+    except Exception:
+        print("[ERROR] Failed to download CSV")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # ------------------------------------------------------------------------
+    # Step 2: Add ETL metadata for lineage and traceability
+    # ------------------------------------------------------------------------
+    try:
+        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        df["_etl_run_id"] = run_id
+        df["_etl_loaded_at"] = datetime.utcnow()
+        print(f"[DEBUG] Added ETL metadata: _etl_run_id={run_id}")
+    except Exception:
+        print("[ERROR] Failed to add ETL metadata")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # ------------------------------------------------------------------------
+    # Step 3: Load data into MongoDB using temp collection + atomic rename
+    # Guarantees consistency across ETL runs
+    # ------------------------------------------------------------------------
+    client = get_mongo_client()
+    db = client[MONGO_DB]
+    tmp_coll_name = f"{MONGO_COLLECTION}_tmp"
+    tmp_coll = db[tmp_coll_name]
+
+    try:
+        print(f"[DEBUG] Checking if temp collection '{tmp_coll_name}' exists")
+        if tmp_coll_name in db.list_collection_names():
+            db.drop_collection(tmp_coll_name)
+            print(f"[DEBUG] Dropped existing temp collection '{tmp_coll_name}'")
+
+        print(f"[DEBUG] Inserting {len(df)} rows into temp collection '{tmp_coll_name}'")
+        tmp_coll.insert_many(df.to_dict(orient="records"))
+
+        count = tmp_coll.count_documents({})
+        print(f"[DEBUG] Temp collection row count after insert: {count}")
+        if count != len(df):
+            raise RuntimeError("Row count mismatch between CSV and temp collection")
+
+        print(f"[DEBUG] Dropping main collection '{MONGO_COLLECTION}' if exists")
+        if MONGO_COLLECTION in db.list_collection_names():
+            db.drop_collection(MONGO_COLLECTION)
+            print(f"[DEBUG] Dropped existing main collection '{MONGO_COLLECTION}'")
+
+        tmp_coll.rename(MONGO_COLLECTION)
+        print(
+            f"[DEBUG] Atomic rename complete: "
+            f"'{tmp_coll_name}' → '{MONGO_COLLECTION}'"
+        )
+    except Exception:
+        print("[ERROR] Failed during MongoDB load/rename")
+        traceback.print_exc()
+        client.close()
+        sys.exit(1)
+    finally:
+        client.close()
+        print("✔ MongoDB connection closed after load")
+
+    # ------------------------------------------------------------------------
+    # Step 4: Export MongoDB collection back to CSV on disk
+    # ------------------------------------------------------------------------
+    export_path = os.path.join(DATA_DIR, output_filename)
+    try:
+        print(
+            f"[INFO] Exporting MongoDB collection "
+            f"'{MONGO_DB}.{MONGO_COLLECTION}' to CSV '{export_path}'"
+        )
+        export_mongo_to_csv(MONGO_DB, MONGO_COLLECTION, export_path)
+    except Exception:
+        print("[ERROR] Failed to export MongoDB to CSV")
+        traceback.print_exc()
+       
 
 # ---------------------------------------------------------------------
 # Step 1: Download CSV from source
