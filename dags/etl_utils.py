@@ -93,10 +93,6 @@ CSV_URLS_FATALITIES = [
 # ---------------------------------------------------------------------
 # MongoDB configuration (Docker-safe)
 # ---------------------------------------------------------------------
-MONGO_HOST = os.getenv("MONGO_HOST", "mongo")
-MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
-MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME")
-MONGO_PASSWORD = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
 
 MONGO_DB = "raw_data"
 MONGO_COLLECTION = "ariadb"
@@ -104,6 +100,27 @@ MONGO_COLLECTION = "ariadb"
 # ---------------------------------------------------------------------
 # MongoDB connection
 # ---------------------------------------------------------------------
+from pymongo import MongoClient
+import os
+
+def get_mongo_client():
+    host = os.getenv("MONGO_HOST", "mongo")
+    port = int(os.getenv("MONGO_PORT", 27017))
+    user = os.getenv("MONGO_INITDB_ROOT_USERNAME")
+    password = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
+
+    if user and password:
+        uri = (
+            f"mongodb://{user}:{password}"
+            f"@{host}:{port}/"
+            f"?authSource=admin"   # ✅ CRITICAL
+        )
+    else:
+        uri = f"mongodb://{host}:{port}/"
+
+    return MongoClient(uri)
+
+
 def get_mongo_client():
     if MONGO_USER and MONGO_PASSWORD:
         uri = (
