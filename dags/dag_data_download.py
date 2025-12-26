@@ -10,7 +10,7 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from datetime import datetime
 
 from etl_utils import (
-    download_csv, download_all_fatalities, download_and_extract_zip, download_all_fatalities, CSV_URL )
+    download_ariadb_via_mongo, download_all_fatalities, download_and_extract_zip, CSV_URL )
 
 def download_ariadb():
     """
