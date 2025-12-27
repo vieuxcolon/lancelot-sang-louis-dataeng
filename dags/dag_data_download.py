@@ -8,6 +8,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
+import os
 from etl_utils import (
     download_ariadb_via_mongo,
     download_all_fatalities,
