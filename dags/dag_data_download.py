@@ -1,6 +1,7 @@
 # =================== dag_data_download.py ====================================================================
 # This DAG is responsible for downloading ARIADB, Workaccidents, and Fatalities data into the landing zone.
 # No direct loading to Postgres or cleaning is done here; this DAG just ensures the raw data files exist on disk.
+# All raw files are written to $DATA_DIR. Loading/cleaning into Postgres is now handled in dag_data_clean.
 # ===========================================================================================================
 
 from airflow import DAG
@@ -8,7 +9,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime
 from etl_utils import (
-    download_csv,
+    download_ariadb_via_mongo,
     download_all_fatalities,
     download_and_extract_zip,
     CSV_URL,
@@ -17,14 +18,15 @@ from etl_utils import (
 
 def task_download_ariadb():
     """
-    Download ARIADB CSV and save it to disk ($DATA_DIR/ariadb.csv)
+    Download ARIADB via MongoDB, export to CSV ($DATA_DIR/ariadb.csv)
     """
-    csv_path = download_csv(CSV_URL, "ariadb.csv", skiprows=7)
-    print(f"✔ ARIADB CSV downloaded to {csv_path}")
+    print(f"[INFO] Downloading ARIADB to {DATA_DIR}/ariadb.csv via MongoDB")
+    download_ariadb_via_mongo(CSV_URL, "ariadb.csv")
+    print(f"✔ ARIADB CSV is ready at {DATA_DIR}/ariadb.csv")
 
 def task_download_fatalities():
     """
-    Download all fatalities files and save them to disk
+    Download all fatalities files into landing zone
     """
     files = download_all_fatalities()
     for f in files:
@@ -32,7 +34,7 @@ def task_download_fatalities():
 
 def task_download_workaccidents():
     """
-    Download and extract workaccidents ZIP file to disk
+    Download and extract Workaccidents ZIP file to landing zone
     """
     csv_path = download_and_extract_zip()
     print(f"✔ Workaccidents CSV downloaded/extracted to {csv_path}")
