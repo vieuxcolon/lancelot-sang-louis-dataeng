@@ -5,6 +5,7 @@
 
 # etl_utils.py well formatted and self-documented.
 
+from psycopg2.extras import execute_values
 import sys
 import traceback
 import csv
@@ -197,8 +198,6 @@ def export_mongo_to_csv(db_name: str, collection_name: str, output_file: str):
 # Main ETL function
 # Source CSV (URL) → MongoDB (atomic load) → CSV on disk
 # ============================================================================
-
-
 
 # ---------------------------------------------------------------------
 # Step 1: Download CSV from source
@@ -931,21 +930,23 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
     df[col] = df[col].replace(country_map)
     return df
 
-# 1️⃣ ARIADB
 
-# =================== etl_utils.py ===================================================================
+# ======================================================================================
+# 1️⃣ ARIADB
+# ======================================================================================
+
 def create_ariadb_clean():
     """
     1️⃣ Load raw ARIADB CSV from disk
     2️⃣ Apply column mapping, date normalization, deduplication, and country normalization
-    3️⃣ Create Postgres clean table ariadb_clean
+    3️⃣ Create Postgres clean table ariadb_clean with batch inserts
     """
     src_csv = os.path.join(DATA_DIR, "ariadb.csv")
     dst_table = DB_CONFIG["ariadb_clean_table"]
 
     print(f"[INFO] Loading ARIADB raw CSV from {src_csv}")
     try:
-        df = pd.read_csv(src_csv, sep=";")
+        df = pd.read_csv(src_csv, sep=";", dtype=str)
         print(f"[INFO] ARIADB raw CSV loaded, {len(df)} rows")
     except Exception:
         print("[ERROR] Failed to read ARIADB CSV")
@@ -970,6 +971,10 @@ def create_ariadb_clean():
 
     # Keep only existing columns and rename
     existing = [c for c in col_map if c in df.columns]
+    if not existing:
+        print("[ERROR] No expected columns found in ARIADB CSV")
+        sys.exit(1)
+
     df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
 
     # ------------------------------------------------------------------------
@@ -994,25 +999,31 @@ def create_ariadb_clean():
     # ------------------------------------------------------------------------
     conn = pg_connect()
     cursor = conn.cursor()
+
+    # Drop table if exists
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    # Create table with primary key if exists
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
-    # Insert rows
-    insert_sql = f"""
-        INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
-        VALUES ({", ".join(["%s"] * len(df.columns))})
-    """
-    for _, row in df.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+    # ------------------------------------------------------------------------
+    # Batch insert rows
+    # ------------------------------------------------------------------------
+    if len(df) > 0:
+        insert_sql = f'INSERT INTO "{dst_table}" ({", ".join([f\'"{c}"\' for c in df.columns])}) VALUES %s'
+        values = [[None if pd.isna(v) else v for v in row] for row in df.to_numpy()]
+        execute_values(cursor, insert_sql, values)
 
     conn.commit()
     conn.close()
-    print(f"✔ Created {dst_table} ({len(df)} rows)")
+    print(f"✔ Created {dst_table} ({len(df)} rows) with batch inserts")
 
 
+#======================================================================================
 # 2️⃣ WORKACCIDENTS
+#======================================================================================
 
 def create_workaccidents_clean():
     """
