@@ -1,6 +1,7 @@
 # =================== dag_data_clean.py ===============================================================================================================
 # DAG responsible for processing, cleaning, transforming and standardizing raw data from the landing zone
-# into the staging zone. Clean datasets include ariadb_clean, workaccidents_clean, and fatalities_clean.
+# It uses utility functions defined in etl_utils.py to perform the various tasks of data cleaning and transformation
+# Resulting clean datasets include ariadb_clean, workaccidents_clean, and fatalities_clean which are loaded into clean database tables
 # =====================================================================================================================================================
 
 from airflow import DAG
@@ -8,17 +9,13 @@ from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.models.baseoperator import chain
 from datetime import datetime
-import os
 
 from etl_utils import (
-    download_ariadb_via_mongo,
     create_ariadb_clean,
     create_workaccidents_clean,
-    create_fatalities_clean,
-    DATA_DIR
+    create_fatalities_clean
 )
 
-# ------------------------- DAG definition -------------------------
 with DAG(
     dag_id="dag_data_clean",
     start_date=datetime(2025, 1, 1),
@@ -28,33 +25,25 @@ with DAG(
     tags=["clean"]
 ) as dag:
 
-    # ------------------------- Task: Download ARIADB from Mongo -------------------------
-    download_ariadb = PythonOperator(
-        task_id="download_ariadb_via_mongo",
-        python_callable=lambda: download_ariadb_via_mongo(
-            url="https://example.com/ariadb_source.csv",
-            output_filename=os.path.join(DATA_DIR, "ariadb_raw.csv")
-        )
-    )
-
-    # ------------------------- Task: Clean ARIADB using CSV -------------------------
-    clean_ariadb = PythonOperator(
+    # Task 1: Clean ARIADB (loads raw CSV internally, creates ariadb_clean table)
+    t1 = PythonOperator(
         task_id="clean_ariadb",
         python_callable=create_ariadb_clean
     )
 
-    # ------------------------- Other clean tasks -------------------------
-    clean_workaccidents = PythonOperator(
+    # Task 2: Clean Workaccidents (loads raw CSV internally, creates workaccidents_clean table)
+    t2 = PythonOperator(
         task_id="clean_workaccidents",
         python_callable=create_workaccidents_clean
     )
 
-    clean_fatalities = PythonOperator(
+    # Task 3: Clean Fatalities (no raw table exists, cleans and creates fatalities_clean table)
+    t3 = PythonOperator(
         task_id="clean_fatalities",
         python_callable=create_fatalities_clean
     )
 
-    # ------------------------- Trigger downstream DAG -------------------------
+    # Trigger next DAG: dag_data_prep
     trigger_prep = TriggerDagRunOperator(
         task_id="trigger_data_prep",
         trigger_dag_id="dag_data_prep",
@@ -63,9 +52,5 @@ with DAG(
         failed_states=["failed"]
     )
 
-    # ------------------------- Task dependencies -------------------------
-    # ARIADB flow: download → clean → downstream
-    download_ariadb >> clean_ariadb
-
-    # Other flows
-    chain(clean_ariadb, clean_workaccidents, clean_fatalities, trigger_prep)
+    # Define dependencies
+    chain([t1, t2, t3], trigger_prep)
