@@ -196,17 +196,16 @@ def export_mongo_to_csv(db_name: str, collection_name: str, output_file: str):
 # Main ETL function
 # Source CSV (URL) → MongoDB (atomic load) → CSV on disk
 # ============================================================================
-def download_ariadb_via_mongo(url: str, output_filename: str = None):
+
+def download_ariadb_via_mongo(url: str):
     """
     End-to-end flow:
         Source CSV (URL)
             → MongoDB temp collection
             → Atomic rename to main collection
-            → Export back to CSV (DATA_DIR/ariadb_raw.csv)
+            → Export back to CSV ($DATA_DIR/ariadb.csv)
 
-    NOTE:
-        output_filename is intentionally ignored.
-        The output path is fixed by contract.
+    The output CSV filename is fixed by contract.
     """
     print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
 
@@ -265,10 +264,7 @@ def download_ariadb_via_mongo(url: str, output_filename: str = None):
             db.drop_collection(MONGO_COLLECTION)
 
         tmp_coll.rename(MONGO_COLLECTION)
-        print(
-            f"[DEBUG] Mongo atomic rename: "
-            f"{tmp_coll_name} → {MONGO_COLLECTION}"
-        )
+        print(f"[DEBUG] Mongo atomic rename: {tmp_coll_name} → {MONGO_COLLECTION}")
     except Exception:
         print("[ERROR] MongoDB load/rename failed")
         traceback.print_exc()
@@ -278,22 +274,18 @@ def download_ariadb_via_mongo(url: str, output_filename: str = None):
         print("✔ MongoDB connection closed")
 
     # ------------------------------------------------------------------------
-    # Step 4: Export MongoDB → CSV (FIXED PATH)
+    # Step 4: Export MongoDB → CSV (fixed path)
     # ------------------------------------------------------------------------
-    export_path = os.path.join(DATA_DIR, "ariadb_raw.csv")
+    export_path = os.path.join(DATA_DIR, "ariadb.csv")
 
     try:
-        print(
-            f"[INFO] Exporting MongoDB collection "
-            f"'{MONGO_DB}.{MONGO_COLLECTION}' → '{export_path}'"
-        )
+        print(f"[INFO] Exporting MongoDB collection '{MONGO_DB}.{MONGO_COLLECTION}' → '{export_path}'")
         export_mongo_to_csv(MONGO_DB, MONGO_COLLECTION, export_path)
-        print(f"[OK] ariadb_raw.csv written to {export_path}")
+        print(f"[OK] ariadb.csv written to {export_path}")
     except Exception:
         print("[ERROR] MongoDB export to CSV failed")
         traceback.print_exc()
         sys.exit(1)
-
 
 # ---------------------------------------------------------------------
 # Step 1: Download CSV from source
@@ -930,19 +922,29 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
     return df
 
 # 1️⃣ ARIADB
+
+# =================== etl_utils.py ===================================================================
 def create_ariadb_clean():
     """
-    Clean ARIADB from the raw CSV and load into Postgres.
-    Reads the pre-downloaded ariadb_raw.csv from DATA_DIR.
+    1️⃣ Load raw ARIADB CSV from disk
+    2️⃣ Apply column mapping, date normalization, deduplication, and country normalization
+    3️⃣ Create Postgres clean table ariadb_clean
     """
-    raw_csv_path = os.path.join(DATA_DIR, "ariadb_raw.csv")
-    if not os.path.exists(raw_csv_path):
-        raise FileNotFoundError(f"Raw ARIADB CSV not found at {raw_csv_path}")
+    src_csv = os.path.join(DATA_DIR, "ariadb.csv")
+    dst_table = DB_CONFIG["ariadb_clean_table"]
 
-    # Load raw CSV
-    df = pd.read_csv(raw_csv_path, sep=";", skiprows=0)  # skiprows handled in download step
+    print(f"[INFO] Loading ARIADB raw CSV from {src_csv}")
+    try:
+        df = pd.read_csv(src_csv, sep=";")
+        print(f"[INFO] ARIADB raw CSV loaded, {len(df)} rows")
+    except Exception:
+        print("[ERROR] Failed to read ARIADB CSV")
+        traceback.print_exc()
+        sys.exit(1)
 
-    # Updated column mapping
+    # ------------------------------------------------------------------------
+    # Column mapping
+    # ------------------------------------------------------------------------
     col_map = {
         "numéro_aria": "aria_id",
         "titre": "title",
@@ -953,29 +955,35 @@ def create_ariadb_clean():
         "départment": "department",
         "commune": "municipality",
         "type_d'accident": "accident_type",
-        "type_évènement": "hazard_class",  # ✅ New mapping
+        "type_évènement": "hazard_class",
     }
 
-    # Keep only existing columns and rename them
+    # Keep only existing columns and rename
     existing = [c for c in col_map if c in df.columns]
     df = df[existing].rename(columns={k: col_map[k] for k in existing}).copy()
 
+    # ------------------------------------------------------------------------
     # Normalize date
+    # ------------------------------------------------------------------------
     if "incident_date" in df.columns:
         df["incident_date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
+    # ------------------------------------------------------------------------
     # Deduplicate on primary key
+    # ------------------------------------------------------------------------
     if "aria_id" in df.columns:
         df.drop_duplicates(subset=["aria_id"], inplace=True)
 
+    # ------------------------------------------------------------------------
     # Normalize country
+    # ------------------------------------------------------------------------
     df = normalize_country(df, "country")
 
+    # ------------------------------------------------------------------------
     # Create clean table in Postgres
-    dst_table = DB_CONFIG["ariadb_clean_table"]
+    # ------------------------------------------------------------------------
     conn = pg_connect()
     cursor = conn.cursor()
-
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
@@ -991,15 +999,40 @@ def create_ariadb_clean():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created {dst_table} ({len(df)} rows) from {raw_csv_path}")
+    print(f"✔ Created {dst_table} ({len(df)} rows)")
+
 
 # 2️⃣ WORKACCIDENTS
+
 def create_workaccidents_clean():
+    """
+    ETL function to load raw Workaccidents CSV into Postgres, then clean and create
+    the workaccidents_clean table.
+    """
+    # ----------------------------
+    # Step 0: Define paths and tables
+    # ----------------------------
+    raw_csv_path = os.path.join(DATA_DIR, "workaccidents.csv")
     src_table = DB_CONFIG["workaccidents_table"]
     dst_table = DB_CONFIG["workaccidents_clean_table"]
+
+    # ----------------------------
+    # Step 1: Load raw CSV into Postgres
+    # ----------------------------
+    print(f"[INFO] Loading Workaccidents raw CSV into Postgres: {raw_csv_path}")
+    load_to_postgres(raw_csv_path, table_name=src_table, sep=",")
+    print(f"✔ Loaded Workaccidents raw table in Postgres from {raw_csv_path}")
+
+    # ----------------------------
+    # Step 2: Read raw table
+    # ----------------------------
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+    print(f"[INFO] Loaded {len(df)} rows from raw table '{src_table}'")
 
+    # ----------------------------
+    # Step 3: Cleaning & normalization
+    # ----------------------------
     # Drop unnecessary column
     if "final_narrative" in df.columns:
         df.drop(columns=["final_narrative"], inplace=True)
@@ -1029,7 +1062,9 @@ def create_workaccidents_clean():
     if "upa" in df_clean.columns:
         df_clean = df_clean.drop_duplicates(subset=["upa"])
 
-    # Create clean table
+    # ----------------------------
+    # Step 4: Create clean table in Postgres
+    # ----------------------------
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
 
