@@ -196,56 +196,56 @@ def export_mongo_to_csv(db_name: str, collection_name: str, output_file: str):
 # Main ETL function
 # Source CSV (URL) → MongoDB (atomic load) → CSV on disk
 # ============================================================================
-def download_ariadb_via_mongo(url: str, output_filename: str):
+def download_ariadb_via_mongo(url: str, output_filename: str = None):
     """
-    Replacement for download_csv.
-
     End-to-end flow:
         Source CSV (URL)
             → MongoDB temp collection
             → Atomic rename to main collection
-            → Export back to CSV (DATA_DIR)
+            → Export back to CSV (DATA_DIR/ariadb_raw.csv)
+
+    NOTE:
+        output_filename is intentionally ignored.
+        The output path is fixed by contract.
     """
     print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
 
     # ------------------------------------------------------------------------
     # Step 1: Download CSV from source URL
-    # Handles encoding fallback for real-world datasets
     # ------------------------------------------------------------------------
     try:
-        print(f"[DEBUG] Attempting to read CSV from URL '{url}' with UTF-8 encoding")
+        print("[DEBUG] Attempting UTF-8 CSV read")
         df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
         print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
     except UnicodeDecodeError:
-        print("[WARNING] UTF-8 decoding failed, trying latin1 encoding...")
+        print("[WARNING] UTF-8 failed, trying latin1")
         try:
             df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
-            print(f"[DEBUG] CSV loaded with latin1 encoding, rows: {len(df)}")
+            print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
         except Exception:
-            print("[ERROR] Failed to load CSV with latin1 encoding")
+            print("[ERROR] CSV read failed (latin1)")
             traceback.print_exc()
             sys.exit(1)
     except Exception:
-        print("[ERROR] Failed to download CSV")
+        print("[ERROR] CSV download failed")
         traceback.print_exc()
         sys.exit(1)
 
     # ------------------------------------------------------------------------
-    # Step 2: Add ETL metadata for lineage and traceability
+    # Step 2: Add ETL metadata
     # ------------------------------------------------------------------------
     try:
         run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
         df["_etl_run_id"] = run_id
         df["_etl_loaded_at"] = datetime.utcnow()
-        print(f"[DEBUG] Added ETL metadata: _etl_run_id={run_id}")
+        print(f"[DEBUG] ETL metadata added (_etl_run_id={run_id})")
     except Exception:
         print("[ERROR] Failed to add ETL metadata")
         traceback.print_exc()
         sys.exit(1)
 
     # ------------------------------------------------------------------------
-    # Step 3: Load data into MongoDB using temp collection + atomic rename
-    # Guarantees consistency across ETL runs
+    # Step 3: Load into MongoDB (temp → atomic rename)
     # ------------------------------------------------------------------------
     client = get_mongo_client()
     db = client[MONGO_DB]
@@ -253,52 +253,47 @@ def download_ariadb_via_mongo(url: str, output_filename: str):
     tmp_coll = db[tmp_coll_name]
 
     try:
-        print(f"[DEBUG] Checking if temp collection '{tmp_coll_name}' exists")
         if tmp_coll_name in db.list_collection_names():
             db.drop_collection(tmp_coll_name)
-            print(f"[DEBUG] Dropped existing temp collection '{tmp_coll_name}'")
 
-        print(f"[DEBUG] Inserting {len(df)} rows into temp collection '{tmp_coll_name}'")
         tmp_coll.insert_many(df.to_dict(orient="records"))
 
-        count = tmp_coll.count_documents({})
-        print(f"[DEBUG] Temp collection row count after insert: {count}")
-        if count != len(df):
-            raise RuntimeError("Row count mismatch between CSV and temp collection")
+        if tmp_coll.count_documents({}) != len(df):
+            raise RuntimeError("Row count mismatch after Mongo insert")
 
-        print(f"[DEBUG] Dropping main collection '{MONGO_COLLECTION}' if exists")
         if MONGO_COLLECTION in db.list_collection_names():
             db.drop_collection(MONGO_COLLECTION)
-            print(f"[DEBUG] Dropped existing main collection '{MONGO_COLLECTION}'")
 
         tmp_coll.rename(MONGO_COLLECTION)
         print(
-            f"[DEBUG] Atomic rename complete: "
-            f"'{tmp_coll_name}' → '{MONGO_COLLECTION}'"
+            f"[DEBUG] Mongo atomic rename: "
+            f"{tmp_coll_name} → {MONGO_COLLECTION}"
         )
     except Exception:
-        print("[ERROR] Failed during MongoDB load/rename")
+        print("[ERROR] MongoDB load/rename failed")
         traceback.print_exc()
-        client.close()
         sys.exit(1)
     finally:
         client.close()
-        print("✔ MongoDB connection closed after load")
+        print("✔ MongoDB connection closed")
 
     # ------------------------------------------------------------------------
-    # Step 4: Export MongoDB collection back to CSV on disk
+    # Step 4: Export MongoDB → CSV (FIXED PATH)
     # ------------------------------------------------------------------------
-    export_path = os.path.join(DATA_DIR, output_filename)
+    export_path = os.path.join(DATA_DIR, "ariadb_raw.csv")
+
     try:
         print(
             f"[INFO] Exporting MongoDB collection "
-            f"'{MONGO_DB}.{MONGO_COLLECTION}' to CSV '{export_path}'"
+            f"'{MONGO_DB}.{MONGO_COLLECTION}' → '{export_path}'"
         )
         export_mongo_to_csv(MONGO_DB, MONGO_COLLECTION, export_path)
+        print(f"[OK] ariadb_raw.csv written to {export_path}")
     except Exception:
-        print("[ERROR] Failed to export MongoDB to CSV")
+        print("[ERROR] MongoDB export to CSV failed")
         traceback.print_exc()
-       
+        sys.exit(1)
+
 
 # ---------------------------------------------------------------------
 # Step 1: Download CSV from source
@@ -936,10 +931,16 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
 
 # 1️⃣ ARIADB
 def create_ariadb_clean():
-    src_table = DB_CONFIG["ariadb_table"]
-    dst_table = DB_CONFIG["ariadb_clean_table"]
-    conn = pg_connect()
-    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+    """
+    Clean ARIADB from the raw CSV and load into Postgres.
+    Reads the pre-downloaded ariadb_raw.csv from DATA_DIR.
+    """
+    raw_csv_path = os.path.join(DATA_DIR, "ariadb_raw.csv")
+    if not os.path.exists(raw_csv_path):
+        raise FileNotFoundError(f"Raw ARIADB CSV not found at {raw_csv_path}")
+
+    # Load raw CSV
+    df = pd.read_csv(raw_csv_path, sep=";", skiprows=0)  # skiprows handled in download step
 
     # Updated column mapping
     col_map = {
@@ -953,7 +954,6 @@ def create_ariadb_clean():
         "commune": "municipality",
         "type_d'accident": "accident_type",
         "type_évènement": "hazard_class",  # ✅ New mapping
-        # "classe_de_danger_clp": "hazard_class",  # removed
     }
 
     # Keep only existing columns and rename them
@@ -971,8 +971,11 @@ def create_ariadb_clean():
     # Normalize country
     df = normalize_country(df, "country")
 
-    # Create clean table
+    # Create clean table in Postgres
+    dst_table = DB_CONFIG["ariadb_clean_table"]
+    conn = pg_connect()
     cursor = conn.cursor()
+
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
@@ -988,7 +991,7 @@ def create_ariadb_clean():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created ariadb_clean ({len(df)} rows)")
+    print(f"✔ Created {dst_table} ({len(df)} rows) from {raw_csv_path}")
 
 # 2️⃣ WORKACCIDENTS
 def create_workaccidents_clean():
