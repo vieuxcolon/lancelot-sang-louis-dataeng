@@ -18,11 +18,12 @@ from etl_utils import (
 
 def task_download_ariadb():
     """
-    Download ARIADB via MongoDB, export to CSV ($DATA_DIR/ariadb.csv)
+    Download ARIADB CSV via MongoDB and save to $DATA_DIR/ariadb.csv
     """
     print(f"[INFO] Downloading ARIADB to {DATA_DIR}/ariadb.csv via MongoDB")
-    download_ariadb_via_mongo(CSV_URL, "ariadb.csv")
-    print(f"✔ ARIADB CSV is ready at {DATA_DIR}/ariadb.csv")
+    download_ariadb_via_mongo(CSV_URL)
+    print(f"✔ ARIADB CSV downloaded to {DATA_DIR}/ariadb.csv")
+
 
 def task_download_fatalities():
     """
