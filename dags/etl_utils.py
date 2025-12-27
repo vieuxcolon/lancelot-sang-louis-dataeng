@@ -844,7 +844,8 @@ def create_ariadb_clean():
     1️⃣ Load raw ARIADB CSV from disk
     2️⃣ Normalize column names (Mongo-safe)
     3️⃣ Apply column mapping, date normalization, deduplication, country normalization
-    4️⃣ Create Postgres clean table ariadb_clean
+    4️⃣ Ensure required columns are present
+    5️⃣ Create Postgres clean table ariadb_clean
     """
     src_csv = os.path.join(DATA_DIR, "ariadb.csv")
     dst_table = DB_CONFIG["ariadb_clean_table"]
@@ -871,6 +872,33 @@ def create_ariadb_clean():
     print(list(df.columns))
 
     # ------------------------------------------------------------------------
+    # Pre-flight check: ensure all required raw columns are present
+    # ------------------------------------------------------------------------
+    required_columns = [
+        "numero_aria",
+        "titre",
+        "type_de_publication",
+        "date",
+        "code_naf",
+        "pays",
+        "department",
+        "commune",
+        "type_daccident",
+        "type_evenement",
+        "classe_de_danger_clp",
+    ]
+
+    missing_cols = [c for c in required_columns if c not in df.columns]
+
+    if missing_cols:
+        print("[ERROR] The following required columns are missing after normalization:")
+        for c in missing_cols:
+            print(f" - {c}")
+        raise RuntimeError("Cannot continue: missing critical columns in ARIADB CSV.")
+    else:
+        print("[INFO] All required columns are present after normalization.")
+
+    # ------------------------------------------------------------------------
     # Column mapping (stable, order-independent)
     # ------------------------------------------------------------------------
     col_map = {
@@ -888,13 +916,6 @@ def create_ariadb_clean():
     }
 
     present_cols = {c: col_map[c] for c in df.columns if c in col_map}
-
-    if not present_cols:
-        raise RuntimeError(
-            "No ARIADB columns matched after clean_column_names(). "
-            "Aborting to prevent empty INSERT."
-        )
-
     df = df[list(present_cols.keys())].rename(columns=present_cols).copy()
 
     print("[DEBUG] ARIADB columns after mapping:")
@@ -904,10 +925,7 @@ def create_ariadb_clean():
     # Normalize date
     # ------------------------------------------------------------------------
     if "incident_date" in df.columns:
-        df["incident_date"] = (
-            pd.to_datetime(df["incident_date"], errors="coerce")
-            .dt.strftime("%Y-%m-%d")
-        )
+        df["incident_date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
     # ------------------------------------------------------------------------
     # Deduplicate on primary key
@@ -937,7 +955,6 @@ def create_ariadb_clean():
         "event_type",
         "hazard_class",
     ]
-
     df = df[[c for c in final_columns if c in df.columns]]
 
     print("[DEBUG] Final ARIADB clean dataframe preview (first 10 rows):")
@@ -968,9 +985,7 @@ def create_ariadb_clean():
 
     conn.commit()
     conn.close()
-
     print(f"✔ Created {dst_table} ({len(df)} rows)")
-
 
 #======================================================================================
 # 2️⃣ WORKACCIDENTS
