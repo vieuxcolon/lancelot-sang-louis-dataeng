@@ -367,13 +367,14 @@ def read_csv_robust(csv_content, sep=",", skiprows=0, dtype=str):
 # COLUMN CLEANING
 # =====================================================================================
 
-
-
+# -------------------------------------------------------------------------
+# Helper: normalize column names
+# -------------------------------------------------------------------------
 def clean_column_names(df):
     def clean(c):
         # remove accents
         c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
-        # lowercase and replace spaces/special chars
+        # lowercase, remove/replace special chars
         c = (
             c.strip()
             .lower()
@@ -389,6 +390,136 @@ def clean_column_names(df):
 
     df.columns = [clean(c) for c in df.columns]
     return df
+
+# -------------------------------------------------------------------------
+# Main ETL function
+# -------------------------------------------------------------------------
+def create_ariadb_clean():
+    """
+    1️⃣ Load raw ARIADB CSV from disk
+    2️⃣ Normalize column names (Mongo-safe)
+    3️⃣ Apply column mapping, date normalization, deduplication, country normalization
+    4️⃣ Create Postgres clean table ariadb_clean
+    """
+    src_csv = os.path.join(DATA_DIR, "ariadb.csv")
+    dst_table = DB_CONFIG["ariadb_clean_table"]
+
+    print(f"[INFO] Loading ARIADB raw CSV from {src_csv}")
+    try:
+        df = pd.read_csv(src_csv, sep=";")
+        print(f"[INFO] ARIADB raw CSV loaded, {len(df)} rows")
+        print("[DEBUG] ARIADB raw columns (before cleaning):")
+        print(list(df.columns))
+    except Exception:
+        print("[ERROR] Failed to read ARIADB CSV")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # ---------------------------------------------------------------------
+    # Normalize column names (removes accents/apostrophes, lowercase, underscores)
+    # ---------------------------------------------------------------------
+    df = clean_column_names(df)
+    print("[DEBUG] ARIADB columns after clean_column_names():")
+    print(list(df.columns))
+
+    # ---------------------------------------------------------------------
+    # Column mapping (stable, order-independent)
+    # ---------------------------------------------------------------------
+    col_map = {
+        "numero_aria": "aria_id",
+        "titre": "title",
+        "type_de_publication": "publication_type",
+        "date": "incident_date",
+        "code_naf": "industry_code",
+        "pays": "country",
+        "department": "department",
+        "commune": "municipality",
+        "type_daccident": "accident_type",
+        "type_evenement": "event_type",
+        "classe_de_danger_clp": "hazard_class",
+    }
+
+    # Keep only columns present in df
+    present_cols = {c: col_map[c] for c in df.columns if c in col_map}
+
+    # Validate required columns
+    required_cols = ["numero_aria", "department", "type_daccident", "type_evenement"]
+    missing = [c for c in required_cols if c not in df.columns and c not in present_cols]
+    if missing:
+        raise RuntimeError(
+            f"Cannot continue: missing critical columns in ARIADB CSV after normalization: {missing}"
+        )
+
+    df = df[list(present_cols.keys())].rename(columns=present_cols).copy()
+    print("[DEBUG] ARIADB columns after mapping:")
+    print(list(df.columns))
+
+    # ---------------------------------------------------------------------
+    # Normalize date
+    # ---------------------------------------------------------------------
+    if "incident_date" in df.columns:
+        df["incident_date"] = (
+            pd.to_datetime(df["incident_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+        )
+
+    # ---------------------------------------------------------------------
+    # Deduplicate on primary key
+    # ---------------------------------------------------------------------
+    if "aria_id" in df.columns:
+        df.drop_duplicates(subset=["aria_id"], inplace=True)
+
+    # ---------------------------------------------------------------------
+    # Normalize country
+    # ---------------------------------------------------------------------
+    if "country" in df.columns:
+        df = normalize_country(df, "country")
+
+    # ---------------------------------------------------------------------
+    # Enforce final column ordering (matches historical schema)
+    # ---------------------------------------------------------------------
+    final_columns = [
+        "aria_id",
+        "title",
+        "publication_type",
+        "incident_date",
+        "industry_code",
+        "country",
+        "department",
+        "municipality",
+        "accident_type",
+        "event_type",
+        "hazard_class",
+    ]
+    df = df[[c for c in final_columns if c in df.columns]]
+
+    print("[DEBUG] Final ARIADB clean dataframe preview (first 10 rows):")
+    print(df.head(10).to_string(index=False))
+
+    # ---------------------------------------------------------------------
+    # Create clean table in Postgres
+    # ---------------------------------------------------------------------
+    conn = pg_connect()
+    cursor = conn.cursor()
+
+    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    pk = ', PRIMARY KEY ("aria_id")' if "aria_id" in df.columns else ""
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+
+    # ---------------------------------------------------------------------
+    # Batch insert rows (safe & fast)
+    # ---------------------------------------------------------------------
+    if len(df) > 0:
+        cols = ", ".join(f'"{c}"' for c in df.columns)
+        insert_sql = f'INSERT INTO "{dst_table}" ({cols}) VALUES %s'
+        values = [[None if pd.isna(v) else v for v in row] for row in df.to_numpy()]
+        execute_values(cursor, insert_sql, values)
+
+    conn.commit()
+    conn.close()
+    print(f"✔ Created {dst_table} ({len(df)} rows)")
 
 
 # =====================================================================================
@@ -841,159 +972,6 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
     }
     df[col] = df[col].replace(country_map)
     return df
-
-
-# ======================================================================================
-# 1️⃣ ARIADB
-# ======================================================================================
-
-def create_ariadb_clean():
-    """
-    1️⃣ Load raw ARIADB CSV from disk
-    2️⃣ Normalize column names (Mongo-safe)
-    3️⃣ Apply column mapping, date normalization, deduplication, country normalization
-    4️⃣ Ensure required columns are present
-    5️⃣ Create Postgres clean table ariadb_clean
-    """
-    src_csv = os.path.join(DATA_DIR, "ariadb.csv")
-    dst_table = DB_CONFIG["ariadb_clean_table"]
-
-    print(f"[INFO] Loading ARIADB raw CSV from {src_csv}")
-    try:
-        df = pd.read_csv(src_csv, sep=";")
-        print(f"[INFO] ARIADB raw CSV loaded, {len(df)} rows")
-        print("[DEBUG] ARIADB raw dataframe preview (first 10 rows):")
-        print(df.head(10).to_string(index=False))
-        print("[DEBUG] ARIADB raw columns (before cleaning):")
-        print(list(df.columns))
-    except Exception:
-        print("[ERROR] Failed to read ARIADB CSV")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # ------------------------------------------------------------------------
-    # Normalize column names (CRITICAL – fixes MongoDB-induced drift)
-    # ------------------------------------------------------------------------
-    df = clean_column_names(df)
-
-    print("[DEBUG] ARIADB columns after clean_column_names():")
-    print(list(df.columns))
-
-    # ------------------------------------------------------------------------
-    # Pre-flight check: ensure all required raw columns are present
-    # ------------------------------------------------------------------------
-    required_columns = [
-        "numero_aria",
-        "titre",
-        "type_de_publication",
-        "date",
-        "code_naf",
-        "pays",
-        "department",
-        "commune",
-        "type_daccident",
-        "type_evenement",
-        "classe_de_danger_clp",
-    ]
-
-    missing_cols = [c for c in required_columns if c not in df.columns]
-
-    if missing_cols:
-        print("[ERROR] The following required columns are missing after normalization:")
-        for c in missing_cols:
-            print(f" - {c}")
-        raise RuntimeError("Cannot continue: missing critical columns in ARIADB CSV.")
-    else:
-        print("[INFO] All required columns are present after normalization.")
-
-    # ------------------------------------------------------------------------
-    # Column mapping (stable, order-independent)
-    # ------------------------------------------------------------------------
-    col_map = {
-        "numero_aria": "aria_id",
-        "titre": "title",
-        "type_de_publication": "publication_type",
-        "date": "incident_date",
-        "code_naf": "industry_code",
-        "pays": "country",
-        "department": "department",
-        "commune": "municipality",
-        "type_daccident": "accident_type",
-        "type_evenement": "event_type",
-        "classe_de_danger_clp": "hazard_class",
-    }
-
-    present_cols = {c: col_map[c] for c in df.columns if c in col_map}
-    df = df[list(present_cols.keys())].rename(columns=present_cols).copy()
-
-    print("[DEBUG] ARIADB columns after mapping:")
-    print(list(df.columns))
-
-    # ------------------------------------------------------------------------
-    # Normalize date
-    # ------------------------------------------------------------------------
-    if "incident_date" in df.columns:
-        df["incident_date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-    # ------------------------------------------------------------------------
-    # Deduplicate on primary key
-    # ------------------------------------------------------------------------
-    if "aria_id" in df.columns:
-        df.drop_duplicates(subset=["aria_id"], inplace=True)
-
-    # ------------------------------------------------------------------------
-    # Normalize country
-    # ------------------------------------------------------------------------
-    if "country" in df.columns:
-        df = normalize_country(df, "country")
-
-    # ------------------------------------------------------------------------
-    # Enforce final column ordering (matches historical schema)
-    # ------------------------------------------------------------------------
-    final_columns = [
-        "aria_id",
-        "title",
-        "publication_type",
-        "incident_date",
-        "industry_code",
-        "country",
-        "department",
-        "municipality",
-        "accident_type",
-        "event_type",
-        "hazard_class",
-    ]
-    df = df[[c for c in final_columns if c in df.columns]]
-
-    print("[DEBUG] Final ARIADB clean dataframe preview (first 10 rows):")
-    print(df.head(10).to_string(index=False))
-
-    # ------------------------------------------------------------------------
-    # Create clean table in Postgres
-    # ------------------------------------------------------------------------
-    conn = pg_connect()
-    cursor = conn.cursor()
-
-    cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-    pk = ', PRIMARY KEY ("aria_id")' if "aria_id" in df.columns else ""
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
-
-    # ------------------------------------------------------------------------
-    # Batch insert rows (safe & fast)
-    # ------------------------------------------------------------------------
-    from psycopg2.extras import execute_values
-
-    if len(df) > 0:
-        cols = ", ".join(f'"{c}"' for c in df.columns)
-        insert_sql = f'INSERT INTO "{dst_table}" ({cols}) VALUES %s'
-        values = [[None if pd.isna(v) else v for v in row] for row in df.to_numpy()]
-        execute_values(cursor, insert_sql, values)
-
-    conn.commit()
-    conn.close()
-    print(f"✔ Created {dst_table} ({len(df)} rows)")
 
 #======================================================================================
 # 2️⃣ WORKACCIDENTS
