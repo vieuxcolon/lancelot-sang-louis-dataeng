@@ -18,11 +18,14 @@ from etl_utils import (
 
 def task_download_ariadb():
     """
-    Download ARIADB CSV via MongoDB and save to $DATA_DIR/ariadb.csv
+    Download ARIADB CSV via MongoDB flow and save to fixed CSV path ($DATA_DIR/ariadb.csv).
+    Uses batch inserts to avoid memory issues.
     """
-    print(f"[INFO] Downloading ARIADB to {DATA_DIR}/ariadb.csv via MongoDB")
-    download_ariadb_via_mongo(CSV_URL)
-    print(f"✔ ARIADB CSV downloaded to {DATA_DIR}/ariadb.csv")
+    from etl_utils import download_ariadb_via_mongo, CSV_URL  # import CSV_URL here
+
+    print(f"[INFO] Downloading ARIADB to {os.path.join(DATA_DIR, 'ariadb.csv')} via MongoDB")
+    download_ariadb_via_mongo(CSV_URL, batch_size=5000)
+    print(f"✔ ARIADB CSV ready at {os.path.join(DATA_DIR, 'ariadb.csv')}")
 
 
 def task_download_fatalities():
