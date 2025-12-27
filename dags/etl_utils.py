@@ -852,6 +852,10 @@ def create_ariadb_clean():
     try:
         df = pd.read_csv(src_csv, sep=";")
         print(f"[INFO] ARIADB raw CSV loaded, {len(df)} rows")
+        print("[DEBUG] ARIADB raw dataframe preview (first 10 rows):")
+        print(df.head(10).to_string(index=False))
+        print("[DEBUG] ARIADB raw columns:")
+        print(list(df.columns))
     except Exception:
         print("[ERROR] Failed to read ARIADB CSV")
         traceback.print_exc()
