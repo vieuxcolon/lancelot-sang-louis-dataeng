@@ -2,9 +2,9 @@
 # The utilities contained therein are used by dag_etl_master.py
 # This module provides utility functions for ETL processes
 # specifically for downloading, cleaning, and loading datasets
-
 # etl_utils.py well formatted and self-documented.
 
+import unicodedata
 from psycopg2.extras import execute_values
 import sys
 import traceback
@@ -368,18 +368,26 @@ def read_csv_robust(csv_content, sep=",", skiprows=0, dtype=str):
 # =====================================================================================
 
 
+
 def clean_column_names(df):
-    df.columns = [
-        c.strip()
-        .lower()
-        .replace(" ", "_")
-        .replace("/", "_")
-        .replace("(", "")
-        .replace(")", "")
-        .replace("#", "")
-        .rstrip("_")
-        for c in df.columns
-    ]
+    def clean(c):
+        # remove accents
+        c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
+        # lowercase and replace spaces/special chars
+        c = (
+            c.strip()
+            .lower()
+            .replace(" ", "_")
+            .replace("/", "_")
+            .replace("(", "")
+            .replace(")", "")
+            .replace("'", "")
+            .replace("#", "")
+            .rstrip("_")
+        )
+        return c
+
+    df.columns = [clean(c) for c in df.columns]
     return df
 
 
