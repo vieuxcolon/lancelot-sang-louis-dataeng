@@ -281,8 +281,8 @@ def download_ariadb_via_mongo(url: str):
 
     try:
         print(f"[INFO] Exporting MongoDB collection '{MONGO_DB}.{MONGO_COLLECTION}' → '{export_path}'")
-        export_mongo_to_csv(MONGO_DB, MONGO_COLLECTION, export_path)
-        print(f"[OK] ariadb.csv written to {export_path}")
+        export_mongo_to_csv()  # <-- FIXED: no arguments
+        print(f"✔ ariadb.csv written to {export_path}")
     except Exception:
         print("[ERROR] MongoDB export to CSV failed")
         traceback.print_exc()
