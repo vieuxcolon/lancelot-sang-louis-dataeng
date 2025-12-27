@@ -30,16 +30,57 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 
 
+# ---------------------------------------------------------------------
+# Ensure required environment variables exist
+# ---------------------------------------------------------------------
+required_vars = [
+    "DATA_POSTGRES_DB",
+    "DATA_POSTGRES_USER",
+    "DATA_POSTGRES_PASSWORD",
+]
+
+for var in required_vars:
+    if not os.getenv(var):
+        raise RuntimeError(
+            f"[ERROR] Required ETL Postgres env var '{var}' is missing"
+        )
+
+# -------------------------------
+# ETL PostgreSQL configuration
+# -------------------------------
+DB_CONFIG = {
+    # Connection
+    "host": os.getenv("DATA_POSTGRES_HOST", "postgres"),  # Docker service name
+    "port": int(os.getenv("DATA_POSTGRES_PORT", 5432)),
+    "database": os.getenv("DATA_POSTGRES_DB"),
+    "dbname": os.getenv("DATA_POSTGRES_DB"),              # for psycopg2 compatibility
+    "user": os.getenv("DATA_POSTGRES_USER"),
+    "password": os.getenv("DATA_POSTGRES_PASSWORD"),
+
+    # Tables (unchanged — no regression)
+    "ariadb_table": "ariadb",
+    "ariadb_clean_table": "ariadb_clean",
+    "ariadb_prep_table": "ariadb_prep",
+
+    "workaccidents_table": "workaccidents",
+    "workaccidents_prep_table": "workaccidents_prep",
+    "workaccidents_clean_table": "workaccidents_clean",
+
+    "fatalities_table": "fatalities",
+    "fatalities_clean_table": "fatalities_clean",
+    "fatalities_prep_table": "fatalities_prep",
+}
+
+
 def pg_connect():
-    """Safe Postgres connection for ETL functions"""
+    """Safe Postgres connection for ETL functions (data_db / data_user)"""
     return psycopg2.connect(
         host=DB_CONFIG["host"],
         port=DB_CONFIG["port"],
-        database=DB_CONFIG["dbname"],
+        database=DB_CONFIG["database"],
         user=DB_CONFIG["user"],
         password=DB_CONFIG["password"],
     )
-
 
 # =====================================================================================
 # DATA DIRECTORY (Docker)
@@ -58,24 +99,6 @@ CSV_URL = (
 
 ZIP_URL = "https://www.osha.gov/sites/default/files/January2015toMarch2025.zip"
 
-# Docker Postgres connection
-DB_CONFIG = {
-    "host": "postgres",  # Important: Docker hostname
-    "port": 5432,
-    "database": "airflow",
-    "dbname": "airflow",
-    "user": "airflow",
-    "password": "airflow",
-    "ariadb_table": "ariadb",
-    "ariadb_clean_table": "ariadb_clean",
-    "ariadb_prep_table": "ariadb_prep",
-    "workaccidents_table": "workaccidents",
-    "workaccidents_prep_table": "workaccidents_prep",
-    "workaccidents_clean_table": "workaccidents_clean",
-    "fatalities_table": "fatalities",
-    "fatalities_clean_table": "fatalities_clean",
-    "fatalities_prep_table": "fatalities_prep",
-}
 
 
 # ============================================================
@@ -93,10 +116,6 @@ CSV_URLS_FATALITIES = [
     "https://www.osha.gov/sites/default/files/FatalitiesFY10.csv",
     "https://www.osha.gov/sites/default/files/FatalitiesFY09.csv",
 ]
-
-# ---------------------------------------------------------------------
-# Ensure required environment variables exist
-# ---------------------------------------------------------------------
 
 # ============================================================================
 # Environment validation
