@@ -6,6 +6,7 @@
 
 import unicodedata
 from psycopg2.extras import execute_values
+from psycopg2.extras import execute_batch
 import sys
 import traceback
 import csv
@@ -367,6 +368,59 @@ def read_csv_robust(csv_content, sep=",", skiprows=0, dtype=str):
 # COLUMN CLEANING
 # =====================================================================================
 
+def normalize_country(df: pd.DataFrame, column_name: str = "country") -> pd.DataFrame:
+    """
+    Vectorized normalization of country names in a DataFrame column.
+    - Converts None/NaN to 'UNKNOWN'
+    - Strips whitespace
+    - Uppercases
+    - Normalizes accents
+    - Maps common synonyms to canonical names
+    """
+    if column_name not in df.columns:
+        return df
+
+    # Fill missing values
+    df[column_name] = df[column_name].fillna("UNKNOWN").astype(str)
+
+    # Strip, uppercase
+    df[column_name] = df[column_name].str.strip().str.upper()
+
+    # Normalize accents
+    df[column_name] = (
+        df[column_name]
+        .str.normalize("NFKD")  # decomposes accents
+        .str.encode("ascii", errors="ignore")  # removes accents
+        .str.decode("utf-8")
+    )
+
+    # Mapping table for common country synonyms
+    country_map = {
+        "USA": "USA",
+        "US": "USA",
+        "UNITED STATES": "USA",
+        "UNITED STATES OF AMERICA": "USA",
+        "ETATS-UNIS": "USA",
+        "ETATS UNIS": "USA",
+        "ETATSUNIS": "USA",
+        "UK": "UK",
+        "UNITED KINGDOM": "UK",
+        "ROYAUME-UNI": "UK",
+        "FRANCE": "FRANCE",
+        "GERMANY": "GERMANY",
+        "ALLEMAGNE": "GERMANY",
+        "CANADA": "CANADA",
+    }
+
+    # Replace using vectorized mapping
+    df[column_name] = df[column_name].replace(country_map)
+
+    # Any leftover empty strings or NaN → UNKNOWN
+    df[column_name] = df[column_name].replace({"": "UNKNOWN", None: "UNKNOWN"})
+
+    return df
+
+
 # -------------------------------------------------------------------------
 # Helper: normalize column names
 # -------------------------------------------------------------------------
@@ -394,6 +448,7 @@ def clean_column_names(df):
 # -------------------------------------------------------------------------
 # Main ETL function
 # -------------------------------------------------------------------------
+
 def create_ariadb_clean():
     """
     1️⃣ Load raw ARIADB CSV from disk
@@ -415,16 +470,16 @@ def create_ariadb_clean():
         traceback.print_exc()
         sys.exit(1)
 
-    # ---------------------------------------------------------------------
-    # Normalize column names (removes accents/apostrophes, lowercase, underscores)
-    # ---------------------------------------------------------------------
+    # -----------------------------
+    # Normalize column names
+    # -----------------------------
     df = clean_column_names(df)
     print("[DEBUG] ARIADB columns after clean_column_names():")
     print(list(df.columns))
 
-    # ---------------------------------------------------------------------
-    # Column mapping (stable, order-independent)
-    # ---------------------------------------------------------------------
+    # -----------------------------
+    # Column mapping
+    # -----------------------------
     col_map = {
         "numero_aria": "aria_id",
         "titre": "title",
@@ -439,10 +494,12 @@ def create_ariadb_clean():
         "classe_de_danger_clp": "hazard_class",
     }
 
-    # Keep only columns present in df
+    # Keep only present columns
     present_cols = {c: col_map[c] for c in df.columns if c in col_map}
 
+    # -----------------------------
     # Validate required columns
+    # -----------------------------
     required_cols = ["numero_aria", "department", "type_daccident", "type_evenement"]
     missing = [c for c in required_cols if c not in df.columns and c not in present_cols]
     if missing:
@@ -450,34 +507,35 @@ def create_ariadb_clean():
             f"Cannot continue: missing critical columns in ARIADB CSV after normalization: {missing}"
         )
 
+    # Rename columns
     df = df[list(present_cols.keys())].rename(columns=present_cols).copy()
     print("[DEBUG] ARIADB columns after mapping:")
     print(list(df.columns))
 
-    # ---------------------------------------------------------------------
+    # -----------------------------
     # Normalize date
-    # ---------------------------------------------------------------------
+    # -----------------------------
     if "incident_date" in df.columns:
         df["incident_date"] = (
             pd.to_datetime(df["incident_date"], errors="coerce")
             .dt.strftime("%Y-%m-%d")
         )
 
-    # ---------------------------------------------------------------------
+    # -----------------------------
     # Deduplicate on primary key
-    # ---------------------------------------------------------------------
+    # -----------------------------
     if "aria_id" in df.columns:
         df.drop_duplicates(subset=["aria_id"], inplace=True)
 
-    # ---------------------------------------------------------------------
+    # -----------------------------
     # Normalize country
-    # ---------------------------------------------------------------------
+    # -----------------------------
     if "country" in df.columns:
         df = normalize_country(df, "country")
 
-    # ---------------------------------------------------------------------
-    # Enforce final column ordering (matches historical schema)
-    # ---------------------------------------------------------------------
+    # -----------------------------
+    # Enforce final column ordering
+    # -----------------------------
     final_columns = [
         "aria_id",
         "title",
@@ -496,21 +554,21 @@ def create_ariadb_clean():
     print("[DEBUG] Final ARIADB clean dataframe preview (first 10 rows):")
     print(df.head(10).to_string(index=False))
 
-    # ---------------------------------------------------------------------
+    # -----------------------------
     # Create clean table in Postgres
-    # ---------------------------------------------------------------------
+    # -----------------------------
     conn = pg_connect()
     cursor = conn.cursor()
-
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     pk = ', PRIMARY KEY ("aria_id")' if "aria_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
 
-    # ---------------------------------------------------------------------
-    # Batch insert rows (safe & fast)
-    # ---------------------------------------------------------------------
+    # -----------------------------
+    # Batch insert rows
+    # -----------------------------
+    from psycopg2.extras import execute_values
+
     if len(df) > 0:
         cols = ", ".join(f'"{c}"' for c in df.columns)
         insert_sql = f'INSERT INTO "{dst_table}" ({cols}) VALUES %s'
@@ -780,9 +838,6 @@ def parse_address(raw):
 # =====================================================================================
 # CREATE FATALITIES CLEAN  (FINAL, GUARDED, PRODUCTION-SAFE)
 # =====================================================================================
-
-from psycopg2.extras import execute_batch
-
 
 # ------------------------------------------------------------------
 # Helpers
