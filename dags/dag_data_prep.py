@@ -1,4 +1,8 @@
-# =================== dag_data_prep.py ===============================
+# =================== dag_data_prep.py ===============================================================================================================
+# DAG responsible for processing, transforming and standardizing clean data into star-schema ready data from the staging zone
+# It uses utility functions defined in etl_utils.py to perform the various tasks of data normalization and standardization
+# Resulting prep datasets include ariadb_prep, workaccidents_prep, and fatalities_prep which are used as source for the star schema (dim and fact tables)
+# =====================================================================================================================================================
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
