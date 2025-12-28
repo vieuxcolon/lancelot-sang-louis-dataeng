@@ -1604,53 +1604,104 @@ def create_dimensions(*args, **kwargs):
 # --------------------------
 # Populate dimension tables
 # --------------------------
-def populate_dimensions(*args, **kwargs):
+def populate_fact(*args, **kwargs):
     """
-    Populates all dimension tables from prep tables.
+    Populate the fact_accidents table from prep tables and dimension tables.
+    Converts all numpy types to native Python types for psycopg2 compatibility.
     """
+    import pandas as pd
+    import numpy as np
+    from psycopg2.extras import execute_values
+
     conn = pg_connect()
     cur = conn.cursor()
 
+    # -----------------------------
     # Load prep tables
-    df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
-    df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
-    df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
+    # -----------------------------
+    df_aria = pd.read_sql(f'SELECT * FROM ariadb_prep', conn)
+    df_work = pd.read_sql(f'SELECT * FROM workaccidents_prep', conn)
+    df_fatal = pd.read_sql(f'SELECT * FROM fatalities_prep', conn)
 
-    # Helper to insert values into dimension
-    def insert_unique(df_list, col, table):
-        frames = [df[[col]] for df in df_list if col in df.columns]
-        if not frames:
-            return
-        df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
-        for v in df_dim[col]:
-            cur.execute(f"INSERT INTO {table} (name) VALUES (%s) ON CONFLICT DO NOTHING", (v,))
-        conn.commit()
+    # -----------------------------
+    # Load dimensions
+    # -----------------------------
+    df_dim_date = pd.read_sql("SELECT * FROM dim_date", conn)
+    df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
+    df_dim_industry = pd.read_sql("SELECT * FROM dim_industry", conn)
+    df_dim_accident_type = pd.read_sql("SELECT * FROM dim_accident_type", conn)
+    df_dim_hazard = pd.read_sql("SELECT * FROM dim_hazard", conn)
+    df_dim_employer = pd.read_sql("SELECT * FROM dim_employer", conn)
 
-    insert_unique([df_aria, df_work, df_fatal], "industry_code", "dim_industry")
-    insert_unique([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type")
-    insert_unique([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard")
-    insert_unique([df_aria, df_work, df_fatal], "employer", "dim_employer")
+    # -----------------------------
+    # Helper: merge and map dimension IDs
+    # -----------------------------
+    def build_fact(df):
+        f = df.copy()
+        f.rename(columns={'incident_date':'date', 'accident_date':'date', 'fatality_date':'date'}, inplace=True)
 
-    # Populate dim_date
-    all_dates = pd.concat([
-        df_aria.get("incident_date", pd.Series()),
-        df_work.get("accident_date", pd.Series()),
-        df_fatal.get("fatality_date", pd.Series())
-    ]).dropna().drop_duplicates()
-    for d in all_dates:
-        cur.execute("INSERT INTO dim_date (date) VALUES (%s) ON CONFLICT DO NOTHING", (d,))
+        # Merge with dimension tables
+        f = f.merge(df_dim_date, on='date', how='left')
+        f = f.merge(df_dim_location, on='country', how='left')
 
-    # Populate dim_country
-    all_countries = pd.concat([
-        df_aria.get("country", pd.Series()),
-        df_work.get("country", pd.Series()),
-        df_fatal.get("country", pd.Series())
-    ]).dropna().drop_duplicates()
-    for c in all_countries:
-        cur.execute("INSERT INTO dim_country (country_name) VALUES (%s) ON CONFLICT DO NOTHING", (c,))
+        for src_col, dim_df, id_col in [
+            ('industry_code', df_dim_industry, 'industry_id'),
+            ('accident_type', df_dim_accident_type, 'accident_type_id'),
+            ('hazard_class', df_dim_hazard, 'hazard_id'),
+            ('employer', df_dim_employer, 'employer_id'),
+        ]:
+            if src_col in f.columns:
+                f = f.merge(dim_df, left_on=src_col, right_on='name', how='left')
+                f[id_col] = f[id_col].fillna(0).astype(int)
+            else:
+                f[id_col] = 0
+
+        # Ensure all required columns exist
+        for col in ['date_id','location_id','employer_id','hazard_id','accident_type_id','industry_id']:
+            if col not in f.columns:
+                f[col] = 0
+            else:
+                f[col] = f[col].fillna(0).astype(int)
+
+        return f[['date_id','location_id','employer_id','hazard_id','accident_type_id','industry_id']]
+
+    df_fact = pd.concat([build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)], ignore_index=True)
+
+    # -----------------------------
+    # Convert to native Python types
+    # -----------------------------
+    records = [
+        tuple(
+            int(v) if isinstance(v, (np.integer, np.int64)) else
+            float(v) if isinstance(v, (np.floating, np.float64)) else
+            None if pd.isna(v) else
+            v
+            for v in row
+        )
+        for row in df_fact.to_numpy()
+    ]
+
+    # -----------------------------
+    # Insert into fact table
+    # -----------------------------
+    cur.execute('DROP TABLE IF EXISTS fact_accidents CASCADE')
+    cur.execute("""
+        CREATE TABLE fact_accidents (
+            date_id INT,
+            location_id INT,
+            employer_id INT,
+            hazard_id INT,
+            accident_type_id INT,
+            industry_id INT
+        )
+    """)
+
+    execute_values(cur, "INSERT INTO fact_accidents VALUES %s", records)
 
     conn.commit()
     conn.close()
+    print(f"✔ Populated fact_accidents ({len(records)} rows)")
+
 
 # --------------------------
 # Create fact table
