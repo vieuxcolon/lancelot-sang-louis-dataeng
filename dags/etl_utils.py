@@ -1780,86 +1780,79 @@ def create_dimensions(*args, **kwargs):
 
 # --------------------------
 # Populate dimension tables
-# --------------------------
-
+# -------------------------
+ 
 def populate_fact(*args, **kwargs):
     """
-    Populates the fact_accidents table from prep tables and dimension tables.
-    Uses bulk insert, BIGINT-compatible types, and preserves FK diagnostics.
+    DEBUG VERSION
+    Populates the fact table with extreme diagnostics to identify
+    BIGINT overflow and silent pandas coercions.
     """
- 
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("🔎 Loading prep tables for fact table population...")
+    print("\n====================")
+    print("🔎 START populate_fact (DEBUG MODE)")
+    print("====================\n")
 
     # ----------------------------
     # Load prep tables
     # ----------------------------
+    print("📥 Loading prep tables...")
     df_aria = pd.read_sql("SELECT * FROM ariadb_prep", conn)
     df_work = pd.read_sql("SELECT * FROM workaccidents_prep", conn)
     df_fatal = pd.read_sql("SELECT * FROM fatalities_prep", conn)
 
+    print("ARIA rows:", len(df_aria))
+    print("WORK rows:", len(df_work))
+    print("FATAL rows:", len(df_fatal))
+
+    # Tag source (critical for debugging)
+    df_aria["__source"] = "aria"
+    df_work["__source"] = "work"
+    df_fatal["__source"] = "fatal"
+
+    # ----------------------------
+    # Combine prep tables
+    # ----------------------------
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
+    print("\n📊 Combined fact rows:", len(df_fact))
+
+    print("\n🧪 Column dtypes BEFORE standardization:")
+    print(df_fact.dtypes)
 
     # ----------------------------
     # Standardize join columns
     # ----------------------------
+    print("\n🧹 Standardizing join columns...")
     df_fact["date"] = df_fact["date"].astype(str).str.strip()
     df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
 
     # ----------------------------
     # Load dimension tables
     # ----------------------------
-    dim_industry = pd.read_sql(
-        "SELECT industry_id, industry_code FROM dim_industry", conn
-    )
-    dim_accident_type = pd.read_sql(
-        "SELECT accident_type_id, accident_type FROM dim_accident_type", conn
-    )
-    dim_hazard = pd.read_sql(
-        "SELECT hazard_id, hazard_class FROM dim_hazard", conn
-    )
-    dim_employer = pd.read_sql(
-        "SELECT employer_id, employer FROM dim_employer", conn
-    )
-    dim_country = pd.read_sql(
-        "SELECT country_id, country_name FROM dim_country", conn
-    )
-    dim_date = pd.read_sql(
-        "SELECT date_id, date FROM dim_date", conn
-    )
+    print("\n📥 Loading dimension tables...")
+    dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
+    dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
+    dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
+    dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
+    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
+    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
 
-    dim_country["country_name"] = (
-        dim_country["country_name"].astype(str).str.strip().str.upper()
-    )
+    dim_country["country_name"] = dim_country["country_name"].astype(str).str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
     # ----------------------------
     # Merge foreign keys
     # ----------------------------
-    df_fact = df_fact.merge(
-        dim_industry, how="left", on="industry_code"
-    )
-    df_fact = df_fact.merge(
-        dim_accident_type, how="left", on="accident_type"
-    )
-    df_fact = df_fact.merge(
-        dim_hazard, how="left", on="hazard_class"
-    )
-    df_fact = df_fact.merge(
-        dim_employer, how="left", on="employer"
-    )
-    df_fact = df_fact.merge(
-        dim_country, how="left", left_on="country", right_on="country_name"
-    )
-    df_fact = df_fact.merge(
-        dim_date, how="left", on="date"
-    )
+    print("\n🔗 Merging foreign keys...")
+    df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
+    df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
+    df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
+    df_fact = df_fact.merge(dim_employer, how="left", on="employer")
+    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
+    df_fact = df_fact.merge(dim_date, how="left", on="date")
 
-    # ----------------------------
-    # FK diagnostics (non-blocking)
-    # ----------------------------
     fk_cols = [
         "date_id",
         "country_id",
@@ -1869,13 +1862,40 @@ def populate_fact(*args, **kwargs):
         "employer_id",
     ]
 
-    missing_fk_counts = df_fact[fk_cols].isna().sum()
-    if missing_fk_counts.any():
-        print("⚠ Warning: Missing foreign keys in fact table mapping")
-        print(missing_fk_counts)
+    print("\n📉 FK missing counts:")
+    print(df_fact[fk_cols].isna().sum())
 
     # ----------------------------
-    # Prepare fact rows
+    # FK numeric sanity checks
+    # ----------------------------
+    print("\n🔍 FK numeric diagnostics:")
+    for col in fk_cols:
+        series = df_fact[col]
+        print(f"\n▶ {col}")
+        print("  dtype:", series.dtype)
+        print("  min :", series.dropna().min())
+        print("  max :", series.dropna().max())
+
+    # ----------------------------
+    # Fatality diagnostics (CRITICAL)
+    # ----------------------------
+    print("\n💀 Fatality diagnostics:")
+    if "fatality" in df_fact.columns:
+        print("fatality dtype:", df_fact["fatality"].dtype)
+        print("fatality unique sample:", df_fact["fatality"].dropna().unique()[:10])
+
+        # Detect insane values
+        numeric_fatality = pd.to_numeric(df_fact["fatality"], errors="coerce")
+        print("fatality numeric min:", numeric_fatality.min())
+        print("fatality numeric max:", numeric_fatality.max())
+
+        overflow_fatality = numeric_fatality[
+            numeric_fatality > 9_000_000_000_000_000_000
+        ]
+        print("fatality overflow candidates:", len(overflow_fatality))
+
+    # ----------------------------
+    # Prepare final fact frame
     # ----------------------------
     df_fact_final = df_fact[
         [
@@ -1886,39 +1906,58 @@ def populate_fact(*args, **kwargs):
             "hazard_id",
             "employer_id",
             "fatality",
+            "__source",
         ]
     ]
 
-    # Convert NaN → None and numpy → native Python
+    print("\n🧪 Fact final dtypes:")
+    print(df_fact_final.dtypes)
+
+    print("\n📈 Fact final numeric ranges:")
+    for col in df_fact_final.columns:
+        if col != "__source":
+            s = pd.to_numeric(df_fact_final[col], errors="coerce")
+            print(f"{col}: min={s.min()}, max={s.max()}")
+
+    # ----------------------------
+    # Convert to Python-native types
+    # ----------------------------
+    print("\n🔄 Converting to Python-native types...")
     df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
-    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
+
+    rows_to_insert = []
+    for idx, row in df_fact_final.iterrows():
+        tup = tuple(row.drop("__source"))
+        rows_to_insert.append(tup)
+
+        # Print first few rows verbosely
+        if idx < 5:
+            print(f"Row {idx} ({row['__source']}):", tup)
+
+    print("\n🚀 Rows prepared for insert:", len(rows_to_insert))
 
     # ----------------------------
     # Bulk insert
     # ----------------------------
-    insert_sql = """
+    print("\n📤 Attempting bulk insert...")
+    sql = """
         INSERT INTO fact_accidents (
-            date_id,
-            country_id,
-            industry_id,
-            accident_type_id,
-            hazard_id,
-            employer_id,
-            fatality
+            date_id, country_id, industry_id,
+            accident_type_id, hazard_id, employer_id, fatality
         ) VALUES %s
     """
 
     psycopg2.extras.execute_values(
         cur,
-        insert_sql,
+        sql,
         rows_to_insert,
-        page_size=1000
+        page_size=500
     )
 
     conn.commit()
     conn.close()
 
-    print(f"✅ Fact table populated successfully with {len(rows_to_insert)} rows")
+    print("\n✅ populate_fact completed successfully (DEBUG MODE)")
 
 
 def populate_dimensions(*args, **kwargs):
