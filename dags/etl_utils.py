@@ -638,33 +638,77 @@ def download_and_extract_zip(zip_url=None):
 # LOAD TO POSTGRES (FULL REPLACE)
 # =====================================================================================
 
+def load_to_postgres(csv_input, table_name, skiprows=0, sep=";"):
+    """
+    Load CSV data into Postgres.
 
-def load_to_postgres(csv_content, table_name, skiprows=0, sep=";"):
+    csv_input can be:
+    - a filesystem path to a CSV file
+    - a string containing CSV content
+    """
+
     conn = pg_connect()
     cursor = conn.cursor()
 
-    df = read_csv_robust(csv_content, sep=sep, skiprows=skiprows, dtype=str)
+    # ----------------------------
+    # Detect input type
+    # ----------------------------
+    if isinstance(csv_input, str) and os.path.exists(csv_input):
+        # Case 1: csv_input is a file path
+        print(f"[INFO] Reading CSV from file path: {csv_input}")
+        df = read_csv_robust(csv_input, sep=sep, skiprows=skiprows, dtype=str)
+
+    elif isinstance(csv_input, str):
+        # Case 2: csv_input is CSV content
+        print("[INFO] Reading CSV from in-memory content")
+        df = read_csv_robust(StringIO(csv_input), sep=sep, skiprows=skiprows, dtype=str)
+
+    else:
+        conn.close()
+        raise ValueError(
+            "csv_input must be a file path or CSV content string"
+        )
+
+    # ----------------------------
+    # Guardrail: empty dataframe
+    # ----------------------------
+    if df.empty:
+        print(f"⚠ WARNING: CSV loaded for '{table_name}' but dataframe is EMPTY")
+        print(f"    Columns detected: {list(df.columns)}")
+
+    # Normalize column names
     df = clean_column_names(df)
 
+    # ----------------------------
+    # Recreate table
+    # ----------------------------
     cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
 
     col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
     cursor.execute(f'CREATE TABLE "{table_name}" ({col_defs});')
 
+    # ----------------------------
+    # Insert rows
+    # ----------------------------
     insert_sql = f"""
         INSERT INTO "{table_name}"
         ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
     """
 
+    inserted = 0
     for _, row in df.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+        cursor.execute(
+            insert_sql,
+            [None if pd.isna(v) else v for v in row.values]
+        )
+        inserted += 1
 
     conn.commit()
     cursor.close()
     conn.close()
 
-    print(f"✔ Loaded table: {table_name} ({len(df)} rows)")
+    print(f"✔ Loaded table: {table_name} ({inserted} rows)")
 
 
 # ============================================================
@@ -1050,9 +1094,10 @@ def create_workaccidents_clean():
     # ----------------------------
     print("\n🔎 DEBUG STEP 1 — load_to_postgres()")
     print(f"Target raw table: {src_table}")
+    csv_content = download_and_extract_zip()
 
     load_to_postgres(
-        raw_csv_path,
+        csv_content=csv_content,
         table_name=src_table,
         sep=","
     )
