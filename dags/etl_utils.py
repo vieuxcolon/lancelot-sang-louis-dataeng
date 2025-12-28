@@ -1070,97 +1070,100 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
 
 def create_workaccidents_clean():
     """
-    DEBUG-INSTRUMENTED VERSION
-    ETL function to load raw Workaccidents CSV into Postgres,
-    then clean and create the workaccidents_clean table.
+    ETL function to load Workaccidents CSV (already downloaded)
+    into Postgres, clean it, and create workaccidents_clean.
+
+    DAG semantics:
+    - dag_data_download → download only
+    - dag_data_clean → load + clean
     """
-  
+
     # ----------------------------
-    # Step 0: Define paths and tables
+    # Step 0: Paths & tables
     # ----------------------------
     raw_csv_path = os.path.join(DATA_DIR, "workaccidents.csv")
     src_table = DB_CONFIG["workaccidents_table"]
     dst_table = DB_CONFIG["workaccidents_clean_table"]
 
-    print("\n🔎 DEBUG STEP 0 — PATH CHECK")
-    print(f"Expected CSV path: {raw_csv_path}")
-    print(f"File exists: {os.path.exists(raw_csv_path)}")
-    if os.path.exists(raw_csv_path):
-        print(f"File size (bytes): {os.path.getsize(raw_csv_path)}")
-    else:
-        raise FileNotFoundError("❌ CSV NOT FOUND INSIDE CONTAINER")
+    print("\n🔎 STEP 0 — CSV PATH CHECK")
+    print(f"CSV path: {raw_csv_path}")
+
+    if not os.path.exists(raw_csv_path):
+        raise FileNotFoundError(
+            f"❌ Required CSV not found: {raw_csv_path}. "
+            "dag_data_download must run first."
+        )
+
+    file_size = os.path.getsize(raw_csv_path)
+    print(f"CSV size: {file_size} bytes")
+
+    if file_size == 0:
+        raise ValueError("❌ CSV file exists but is EMPTY")
 
     # ----------------------------
-    # Step 1: Load raw CSV into Postgres (UTF-8 → latin-1 fallback)
+    # Step 1: Load raw CSV → Postgres
     # ----------------------------
-    print("\n🔎 DEBUG STEP 1 — load_to_postgres()")
-    print(f"Target raw table: {src_table}")
-
-    try:
-        with open(raw_csv_path, "r", encoding="utf-8") as f:
-            csv_content = f.read()
-        print("✔ CSV read using utf-8 encoding")
-    except UnicodeDecodeError:
-        print("⚠ utf-8 failed, retrying with latin-1")
-        with open(raw_csv_path, "r", encoding="latin-1") as f:
-            csv_content = f.read()
-        print("✔ CSV read using latin-1 encoding")
+    print("\n🔎 STEP 1 — LOAD RAW CSV INTO POSTGRES")
+    print(f"Target table: {src_table}")
 
     load_to_postgres(
-        csv_content,
+        raw_csv_path,
         table_name=src_table,
         sep=","
     )
 
-    print("✔ load_to_postgres() returned")
-
     # ----------------------------
-    # Step 2: Verify raw table population
+    # Step 2: Validate raw table
     # ----------------------------
     conn = pg_connect()
 
-    print("\n🔎 DEBUG STEP 2 — RAW TABLE CHECK")
-    df_raw = pd.read_sql(f'SELECT * FROM "{src_table}" LIMIT 5', conn)
-    count_df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{src_table}"', conn)
+    print("\n🔎 STEP 2 — RAW TABLE VALIDATION")
 
-    print(f"Rows in raw table '{src_table}': {count_df['cnt'][0]}")
-    print("Sample rows:")
-    print(df_raw.head())
+    count_df = pd.read_sql(
+        f'SELECT COUNT(*) AS cnt FROM "{src_table}"',
+        conn
+    )
+
+    raw_count = int(count_df["cnt"][0])
+    print(f"Rows in raw table '{src_table}': {raw_count}")
+
+    if raw_count == 0:
+        conn.close()
+        raise RuntimeError(
+            f"❌ Raw table '{src_table}' is EMPTY after load. "
+            "Aborting to avoid silent data loss."
+        )
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+    print("Raw columns:", list(df.columns))
 
     # ----------------------------
     # Step 3: Cleaning & normalization
     # ----------------------------
-    print("\n🔎 DEBUG STEP 3 — CLEANING PHASE")
+    print("\n🔎 STEP 3 — CLEANING PHASE")
 
-    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
-    print(f"Rows loaded into pandas for cleaning: {len(df)}")
-
-    if df.empty:
-        raise RuntimeError("❌ Raw table is empty — aborting clean phase")
-
-    print("Columns in raw df:")
-    print(list(df.columns))
-
-    # Drop unnecessary column
+    # Drop large text column if present
     if "final_narrative" in df.columns:
         df.drop(columns=["final_narrative"], inplace=True)
 
-    # Normalize accident date
+    # Normalize date
     date_col = "eventdate" if "eventdate" in df.columns else None
     print(f"Detected date column: {date_col}")
 
-    if date_col:
-        df["accident_date"] = pd.to_datetime(
-            df[date_col], errors="coerce"
-        ).dt.strftime("%Y-%m-%d")
-    else:
-        df["accident_date"] = None
+    if not date_col:
+        conn.close()
+        raise RuntimeError("❌ Required column 'eventdate' not found")
+
+    df["accident_date"] = (
+        pd.to_datetime(df[date_col], errors="coerce")
+        .dt.strftime("%Y-%m-%d")
+    )
 
     # Normalize country
     df["country"] = "USA"
 
     # ----------------------------
-    # Step 4: Select columns
+    # Step 4: Column selection
     # ----------------------------
     selected_columns = [
         "id", "upa", "accident_date", "employer", "address1", "address2",
@@ -1172,18 +1175,22 @@ def create_workaccidents_clean():
     ]
 
     df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
-    print(f"Rows after column selection: {len(df_clean)}")
+    print(f"Rows after selection: {len(df_clean)}")
+
+    if df_clean.empty:
+        conn.close()
+        raise RuntimeError("❌ Cleaning resulted in EMPTY dataframe")
 
     # Deduplicate
     if "upa" in df_clean.columns:
         before = len(df_clean)
-        df_clean = df_clean.drop_duplicates(subset=["upa"])
+        df_clean.drop_duplicates(subset=["upa"], inplace=True)
         print(f"Deduplicated by upa: {before} → {len(df_clean)}")
 
     # ----------------------------
     # Step 5: Create clean table
     # ----------------------------
-    print("\n🔎 DEBUG STEP 5 — INSERT CLEAN TABLE")
+    print("\n🔎 STEP 5 — CREATE CLEAN TABLE")
 
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
@@ -1192,17 +1199,23 @@ def create_workaccidents_clean():
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
 
     insert_sql = f"""
-        INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df_clean.columns])})
+        INSERT INTO "{dst_table}"
+        ({", ".join([f'"{c}"' for c in df_clean.columns])})
         VALUES ({", ".join(["%s"] * len(df_clean.columns))})
     """
 
+    inserted = 0
     for _, row in df_clean.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+        cursor.execute(
+            insert_sql,
+            [None if pd.isna(v) else v for v in row.values]
+        )
+        inserted += 1
 
     conn.commit()
     conn.close()
 
-    print(f"✔ Created {dst_table} with {len(df_clean)} rows")
+    print(f"✔ Created '{dst_table}' with {inserted} rows")
 
 
 # ====================================================================================
