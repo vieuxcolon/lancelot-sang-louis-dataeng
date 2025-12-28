@@ -1782,6 +1782,63 @@ def create_dimensions(*args, **kwargs):
 # Populate dimension tables
 # --------------------------
 
+def populate_fact(*args, **kwargs):
+    """
+    Populates the fact table from prep tables and dimension tables.
+    Correctly maps foreign keys to dimension columns.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+
+    print("🔎 Loading prep tables for fact table population...")
+
+    # Load prep tables
+    df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
+    df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
+    df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
+
+    # Combine all prep tables into a single dataframe
+    df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
+
+    # Load dimension tables
+    dim_industry = pd.read_sql('SELECT industry_id, industry_code FROM dim_industry', conn)
+    dim_accident_type = pd.read_sql('SELECT accident_type_id, accident_type FROM dim_accident_type', conn)
+    dim_hazard = pd.read_sql('SELECT hazard_id, hazard_class FROM dim_hazard', conn)
+    dim_employer = pd.read_sql('SELECT employer_id, employer FROM dim_employer', conn)
+    dim_country = pd.read_sql('SELECT country_id, country_name FROM dim_country', conn)
+    dim_date = pd.read_sql('SELECT date_id, date FROM dim_date', conn)
+
+    # Map foreign keys for fact table
+    df_fact = df_fact.merge(dim_industry, how='left', left_on='industry_code', right_on='industry_code')
+    df_fact = df_fact.merge(dim_accident_type, how='left', left_on='accident_type', right_on='accident_type')
+    df_fact = df_fact.merge(dim_hazard, how='left', left_on='hazard_class', right_on='hazard_class')
+    df_fact = df_fact.merge(dim_employer, how='left', left_on='employer', right_on='employer')
+    df_fact = df_fact.merge(dim_country, how='left', left_on='country', right_on='country_name')
+    df_fact = df_fact.merge(dim_date, how='left', left_on='date', right_on='date')
+
+    # Optional: select only the columns you want in the fact table
+    fact_columns = [
+        'date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id',
+        'fatality', 'source_column1', 'source_column2'  # Add any extra fact columns here
+    ]
+    df_fact_final = df_fact[fact_columns]
+
+    # Insert into fact table
+    for _, row in df_fact_final.iterrows():
+        cur.execute("""
+            INSERT INTO fact_accidents (
+                date_id, country_id, industry_id, accident_type_id, hazard_id, employer_id, fatality
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            row['date_id'], row['country_id'], row['industry_id'], row['accident_type_id'],
+            row['hazard_id'], row['employer_id'], row.get('fatality')
+        ))
+
+    conn.commit()
+    conn.close()
+    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows")
+
+
 def populate_dimensions(*args, **kwargs):
     """
     Populates all dimension tables from prep tables with proper primary keys.
@@ -1920,103 +1977,6 @@ def create_fact(*args, **kwargs):
     """)
     conn.commit()
     conn.close()
-
-# --------------------------
-# Populate dimension tables
-# --------------------------
-def populate_fact(*args, **kwargs):
-    """
-    Populate the fact_accidents table from prep tables and dimension tables.
-    Converts all numpy types to native Python types for psycopg2 compatibility.
-    """
-    conn = pg_connect()
-    cur = conn.cursor()
-
-    # -----------------------------
-    # Load prep tables
-    # -----------------------------
-    df_aria = pd.read_sql(f'SELECT * FROM ariadb_prep', conn)
-    df_work = pd.read_sql(f'SELECT * FROM workaccidents_prep', conn)
-    df_fatal = pd.read_sql(f'SELECT * FROM fatalities_prep', conn)
-
-    # -----------------------------
-    # Load dimensions
-    # -----------------------------
-    df_dim_date = pd.read_sql("SELECT * FROM dim_date", conn)
-    df_dim_location = pd.read_sql("SELECT * FROM dim_location", conn)
-    df_dim_industry = pd.read_sql("SELECT * FROM dim_industry", conn)
-    df_dim_accident_type = pd.read_sql("SELECT * FROM dim_accident_type", conn)
-    df_dim_hazard = pd.read_sql("SELECT * FROM dim_hazard", conn)
-    df_dim_employer = pd.read_sql("SELECT * FROM dim_employer", conn)
-
-    # -----------------------------
-    # Helper: merge and map dimension IDs
-    # -----------------------------
-    def build_fact(df):
-        f = df.copy()
-        f.rename(columns={'incident_date':'date', 'accident_date':'date', 'fatality_date':'date'}, inplace=True)
-
-        # Merge with dimension tables
-        f = f.merge(df_dim_date, on='date', how='left')
-        f = f.merge(df_dim_location, on='country', how='left')
-
-        for src_col, dim_df, id_col in [
-            ('industry_code', df_dim_industry, 'industry_id'),
-            ('accident_type', df_dim_accident_type, 'accident_type_id'),
-            ('hazard_class', df_dim_hazard, 'hazard_id'),
-            ('employer', df_dim_employer, 'employer_id'),
-        ]:
-            if src_col in f.columns:
-                f = f.merge(dim_df, left_on=src_col, right_on='name', how='left')
-                f[id_col] = f[id_col].fillna(0).astype(int)
-            else:
-                f[id_col] = 0
-
-        # Ensure all required columns exist
-        for col in ['date_id','location_id','employer_id','hazard_id','accident_type_id','industry_id']:
-            if col not in f.columns:
-                f[col] = 0
-            else:
-                f[col] = f[col].fillna(0).astype(int)
-
-        return f[['date_id','location_id','employer_id','hazard_id','accident_type_id','industry_id']]
-
-    df_fact = pd.concat([build_fact(df_aria), build_fact(df_work), build_fact(df_fatal)], ignore_index=True)
-
-    # -----------------------------
-    # Convert to native Python types
-    # -----------------------------
-    records = [
-        tuple(
-            int(v) if isinstance(v, (np.integer, np.int64)) else
-            float(v) if isinstance(v, (np.floating, np.float64)) else
-            None if pd.isna(v) else
-            v
-            for v in row
-        )
-        for row in df_fact.to_numpy()
-    ]
-
-    # -----------------------------
-    # Insert into fact table
-    # -----------------------------
-    cur.execute('DROP TABLE IF EXISTS fact_accidents CASCADE')
-    cur.execute("""
-        CREATE TABLE fact_accidents (
-            date_id INT,
-            location_id INT,
-            employer_id INT,
-            hazard_id INT,
-            accident_type_id INT,
-            industry_id INT
-        )
-    """)
-
-    execute_values(cur, "INSERT INTO fact_accidents VALUES %s", records)
-
-    conn.commit()
-    conn.close()
-    print(f"✔ Populated fact_accidents ({len(records)} rows)")
 
 
 # ------------------------------
