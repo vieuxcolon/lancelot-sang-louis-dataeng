@@ -1074,6 +1074,7 @@ def create_workaccidents_clean():
     ETL function to load raw Workaccidents CSV into Postgres,
     then clean and create the workaccidents_clean table.
     """
+  
     # ----------------------------
     # Step 0: Define paths and tables
     # ----------------------------
@@ -1087,19 +1088,28 @@ def create_workaccidents_clean():
     if os.path.exists(raw_csv_path):
         print(f"File size (bytes): {os.path.getsize(raw_csv_path)}")
     else:
-        print("❌ CSV NOT FOUND INSIDE CONTAINER")
+        raise FileNotFoundError("❌ CSV NOT FOUND INSIDE CONTAINER")
 
     # ----------------------------
-    # Step 1: Load raw CSV into Postgres
+    # Step 1: Load raw CSV into Postgres (UTF-8 → latin-1 fallback)
     # ----------------------------
     print("\n🔎 DEBUG STEP 1 — load_to_postgres()")
     print(f"Target raw table: {src_table}")
-    csv_content = download_and_extract_zip()
+
+    try:
+        with open(raw_csv_path, "r", encoding="utf-8") as f:
+            csv_content = f.read()
+        print("✔ CSV read using utf-8 encoding")
+    except UnicodeDecodeError:
+        print("⚠ utf-8 failed, retrying with latin-1")
+        with open(raw_csv_path, "r", encoding="latin-1") as f:
+            csv_content = f.read()
+        print("✔ CSV read using latin-1 encoding")
 
     load_to_postgres(
-    raw_csv_path,
-    table_name=src_table,
-    sep=","
+        csv_content,
+        table_name=src_table,
+        sep=","
     )
 
     print("✔ load_to_postgres() returned")
@@ -1110,17 +1120,12 @@ def create_workaccidents_clean():
     conn = pg_connect()
 
     print("\n🔎 DEBUG STEP 2 — RAW TABLE CHECK")
-    try:
-        df_raw = pd.read_sql(f'SELECT * FROM "{src_table}" LIMIT 5', conn)
-        count_df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{src_table}"', conn)
-        print(f"Rows in raw table '{src_table}': {count_df['cnt'][0]}")
-        print("Sample rows:")
-        print(df_raw.head())
-    except Exception as e:
-        print("❌ FAILED TO READ RAW TABLE")
-        print(e)
-        conn.close()
-        raise
+    df_raw = pd.read_sql(f'SELECT * FROM "{src_table}" LIMIT 5', conn)
+    count_df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{src_table}"', conn)
+
+    print(f"Rows in raw table '{src_table}': {count_df['cnt'][0]}")
+    print("Sample rows:")
+    print(df_raw.head())
 
     # ----------------------------
     # Step 3: Cleaning & normalization
@@ -1130,10 +1135,8 @@ def create_workaccidents_clean():
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
     print(f"Rows loaded into pandas for cleaning: {len(df)}")
 
-    if len(df) == 0:
-        print("❌ NO ROWS TO CLEAN — STOPPING HERE")
-        conn.close()
-        return
+    if df.empty:
+        raise RuntimeError("❌ Raw table is empty — aborting clean phase")
 
     print("Columns in raw df:")
     print(list(df.columns))
@@ -1150,11 +1153,8 @@ def create_workaccidents_clean():
         df["accident_date"] = pd.to_datetime(
             df[date_col], errors="coerce"
         ).dt.strftime("%Y-%m-%d")
-        print("Sample accident_date values:")
-        print(df["accident_date"].head())
     else:
         df["accident_date"] = None
-        print("❌ No date column found")
 
     # Normalize country
     df["country"] = "USA"
@@ -1173,13 +1173,12 @@ def create_workaccidents_clean():
 
     df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
     print(f"Rows after column selection: {len(df_clean)}")
-    print(f"Columns in clean df: {list(df_clean.columns)}")
 
     # Deduplicate
     if "upa" in df_clean.columns:
         before = len(df_clean)
         df_clean = df_clean.drop_duplicates(subset=["upa"])
-        print(f"Deduplicated by upa: {before} → {len(df_clean)} rows")
+        print(f"Deduplicated by upa: {before} → {len(df_clean)}")
 
     # ----------------------------
     # Step 5: Create clean table
@@ -1197,15 +1196,13 @@ def create_workaccidents_clean():
         VALUES ({", ".join(["%s"] * len(df_clean.columns))})
     """
 
-    inserted = 0
     for _, row in df_clean.iterrows():
         cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
-        inserted += 1
 
     conn.commit()
     conn.close()
 
-    print(f"✔ Created {dst_table} with {inserted} rows")
+    print(f"✔ Created {dst_table} with {len(df_clean)} rows")
 
 
 # ====================================================================================
