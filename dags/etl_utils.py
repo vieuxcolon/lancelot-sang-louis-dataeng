@@ -1785,25 +1785,26 @@ def create_dimensions(*args, **kwargs):
 def populate_fact(*args, **kwargs):
     """
     Populates the fact_accidents table from prep tables and dimension tables.
-    Includes extensive DEBUG points for type, range, missing FK, and row-level checks.
+    Full debug: tracks prep source, handles BIGINT safely, NaNs -> None, duplicates,
+    missing FKs, numeric ranges, and bulk insert.
     """
+ 
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("🔎 Loading prep tables...")
+    print("🔎 Loading prep tables for fact table population...")
 
     # ----------------------------
-    # Load prep tables
+    # Load prep tables with source tracking
     # ----------------------------
-    df_aria = pd.read_sql("SELECT * FROM ariadb_prep", conn)
-    df_work = pd.read_sql("SELECT * FROM workaccidents_prep", conn)
-    df_fatal = pd.read_sql("SELECT * FROM fatalities_prep", conn)
+    df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
+    df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
+    df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
+
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-
-    print(f"📊 Total prep rows combined: {len(df_fact)}")
-    print(f"Columns: {df_fact.columns.tolist()}")
-    print("Sample prep rows (first 5):")
-    print(df_fact.head())
+    print(f"📊 Combined prep tables: {len(df_fact)} rows")
+    print("Sample prep sources distribution:")
+    print(df_fact['__source'].value_counts())
 
     # ----------------------------
     # Standardize join columns
@@ -1821,87 +1822,90 @@ def populate_fact(*args, **kwargs):
     dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
     dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
 
-    print("📦 Dimension tables loaded")
-    for name, dim in zip(
-        ["industry", "accident_type", "hazard", "employer", "country", "date"],
-        [dim_industry, dim_accident_type, dim_hazard, dim_employer, dim_country, dim_date]
-    ):
-        print(f"  {name}: {len(dim)} rows, columns: {dim.columns.tolist()}")
-        print(dim.head())
-
     dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
     # ----------------------------
-    # Merge foreign keys
+    # Merge dimension tables
     # ----------------------------
-    print("🔗 Merging foreign keys...")
+    print("🔗 Merging dimension tables into prep data...")
     df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
     df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
     df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
     df_fact = df_fact.merge(dim_employer, how="left", on="employer")
     df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_date, how="left", on="date")
-
     print("🔗 Merge complete. Checking for missing FKs...")
+
     fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
     missing_fk_counts = df_fact[fk_cols].isna().sum()
     print("⚠ Missing foreign keys count per column:")
     print(missing_fk_counts)
 
     # ----------------------------
-    # Check for duplicates or invalid merges
+    # Show which prep sources contribute most to missing FKs
     # ----------------------------
-    print("🧩 Checking for duplicate rows after merge...")
-    duplicates = df_fact.duplicated(subset=fk_cols + ["fatality"])
-    print(f"Total duplicates: {duplicates.sum()}")
+    print("🔍 Inspecting prep sources for missing FKs...")
+    for col in fk_cols:
+        missing_source_counts = df_fact[df_fact[col].isna()]["__source"].value_counts()
+        print(f"Missing {col} by prep source:")
+        print(missing_source_counts)
 
     # ----------------------------
-    # Prepare fact table
+    # Check for duplicates
     # ----------------------------
-    df_fact_final = df_fact[[
-        "date_id", "country_id", "industry_id", "accident_type_id",
-        "hazard_id", "employer_id", "fatality"
-    ]].copy()
+    duplicate_count = df_fact.duplicated(subset=fk_cols + ["fatality"]).sum()
+    print(f"🧩 Total duplicates (FKs + fatality): {duplicate_count}")
 
     # ----------------------------
-    # DEBUG: show dtypes and unique counts
+    # Prepare final fact table
     # ----------------------------
-    print("🧪 Fact final dtypes and unique counts BEFORE conversion:")
-    for col in df_fact_final.columns:
-        print(f"{col}: dtype={df_fact_final[col].dtype}, unique_count={df_fact_final[col].nunique()}")
+    df_fact_final = df_fact[fk_cols + ["fatality", "__source"]].copy()
+
+    # Debug data types and numeric ranges
+    print("🧪 Fact final dtypes and numeric ranges BEFORE conversion:")
+    for col in fk_cols + ["fatality"]:
+        if pd.api.types.is_numeric_dtype(df_fact_final[col]):
+            print(f"{col}: dtype={df_fact_final[col].dtype}, min={df_fact_final[col].min()}, max={df_fact_final[col].max()}")
+        else:
+            print(f"{col}: dtype={df_fact_final[col].dtype}, sample_unique={df_fact_final[col].unique()[:5]}")
 
     # ----------------------------
-    # Convert to Python-native types for BIGINT safety
+    # Convert FK columns to int (NaN -> None) safely
     # ----------------------------
-    print("🔄 Converting FK columns to int and fatality to int (None for NaN)")
+    print("🔄 Converting FK columns to int and fatality to int (NaN -> None)...")
     for col in fk_cols:
         df_fact_final[col] = df_fact_final[col].apply(lambda x: int(x) if pd.notnull(x) else None)
-        print(f"{col}: min={df_fact_final[col].min()}, max={df_fact_final[col].max()}")
 
-    df_fact_final["fatality"] = df_fact_final["fatality"].apply(lambda x: int(x) if pd.notnull(x) else None)
-    print(f"fatality: min={df_fact_final['fatality'].min()}, max={df_fact_final['fatality'].max()}")
+    df_fact_final["fatality"] = df_fact_final["fatality"].apply(lambda x: int(x) if pd.notnull(x) else 0)
 
     # ----------------------------
-    # DEBUG: show sample rows
+    # More debug: check rows with missing FK after conversion
     # ----------------------------
-    print("💀 Sample rows after conversion (first 10):")
-    for i, row in enumerate(df_fact_final.head(10).itertuples(index=False)):
-        print(f"Row {i}: {row}")
+    missing_fk_rows = df_fact_final[df_fact_final[fk_cols].isna().any(axis=1)]
+    print(f"⚠ Rows with missing FKs after conversion: {len(missing_fk_rows)}")
+    if len(missing_fk_rows) > 0:
+        print("Sample rows with missing FKs (10):")
+        print(missing_fk_rows.head(10))
+
+        # Show prep source of these rows
+        print("Prep sources for rows with missing FKs:")
+        print(missing_fk_rows["__source"].value_counts())
 
     # ----------------------------
-    # DEBUG: check for any remaining NaNs
+    # Drop missing FKs to avoid BIGINT issues
     # ----------------------------
-    print("🧐 Checking for any remaining NaNs in final table:")
-    print(df_fact_final.isna().sum())
+    df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
+    print(f"🚀 Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
 
     # ----------------------------
-    # Prepare rows for bulk insert
+    # Convert to Python-native tuples
     # ----------------------------
-    rows_to_insert = [tuple(x) for x in df_fact_final.to_numpy()]
+    rows_to_insert = [tuple(x) for x in df_fact_final_clean[fk_cols + ["fatality"]].to_numpy()]
+    print(f"📤 Attempting bulk insert of {len(rows_to_insert)} rows...")
 
     # ----------------------------
-    # Bulk insert
+    # Bulk insert using execute_values
     # ----------------------------
     sql = """
         INSERT INTO fact_accidents (
@@ -1909,13 +1913,11 @@ def populate_fact(*args, **kwargs):
             hazard_id, employer_id, fatality
         ) VALUES %s
     """
-    print("📤 Attempting bulk insert...")
     psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
-
     conn.commit()
     conn.close()
+    print(f"✅ Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
 
-    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows (bulk insert)")
 
 # --------------------------
 # Populate dimension tables
