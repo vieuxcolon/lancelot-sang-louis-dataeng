@@ -2068,38 +2068,57 @@ def create_fact(*args, **kwargs):
 # ------------------------------
 # MINIMAL STAR SCHEMA TEST
 # ------------------------------
+
+# ------------------------------
+# MINIMAL STAR SCHEMA TEST
+# ------------------------------
 def min_test_star_schema(*args, **kwargs):
-    """Select top 5 rows from fact_accidents to ensure IDs exist."""
+    """
+    Select top 5 rows from fact_accidents to ensure foreign keys exist.
+    Updated for current schema: country_id instead of location_id.
+    """
     conn = pg_connect()
     query = """
-        SELECT date_id, location_id, employer_id, hazard_id, accident_type_id, industry_id
+        SELECT date_id, country_id, employer_id, hazard_id,
+               accident_type_id, industry_id, fatality
         FROM fact_accidents
         LIMIT 5;
     """
     df_test = pd.read_sql(query, conn)
     conn.close()
+
     print("✔ min_test_star_schema result (top 5 rows):")
     print(df_test)
-    return df_test
+    print("\n🔎 Data types:")
+    print(df_test.dtypes)
+    print("\n🔎 Numeric ranges:")
+    for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'fatality']:
+        if col in df_test.columns:
+            print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
 
+    return df_test
 
 # ------------------------------
 # FULL STAR SCHEMA TEST
 # ------------------------------
 def full_test_star_schema(*args, **kwargs):
-    """Select top 20 rows from fact_accidents with joins to all dimensions."""
+    """
+    Select top 20 rows from fact_accidents with joins to all dimensions.
+    Updated for current schema: country_id instead of location_id, dim_country instead of dim_location.
+    """
     conn = pg_connect()
     query = """
     SELECT 
         f.date_id, d.date,
-        f.location_id, l.country, l.country_id,
-        f.employer_id, e.name AS employer_name,
-        f.hazard_id, h.name AS hazard_name,
-        f.accident_type_id, a.name AS accident_type_name,
-        f.industry_id, i.name AS industry_name
+        f.country_id, c.country_name,
+        f.employer_id, e.employer AS employer_name,
+        f.hazard_id, h.hazard_class AS hazard_name,
+        f.accident_type_id, a.accident_type AS accident_type_name,
+        f.industry_id, i.industry_code AS industry_name,
+        f.fatality
     FROM fact_accidents f
     LEFT JOIN dim_date d ON f.date_id = d.date_id
-    LEFT JOIN dim_location l ON f.location_id = l.location_id
+    LEFT JOIN dim_country c ON f.country_id = c.country_id
     LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
     LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
     LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
@@ -2108,6 +2127,17 @@ def full_test_star_schema(*args, **kwargs):
     """
     df_test = pd.read_sql(query, conn)
     conn.close()
-    print("✔ Full star schema test query returned:")
-    print(df_test.head())
+
+    print("✔ full_test_star_schema query returned:")
+    print(df_test.head(20))
     print(f"Total rows returned: {len(df_test)}")
+
+    # Debug: data types and ranges
+    print("\n🔎 Data types:")
+    print(df_test.dtypes)
+    print("\n🔎 Numeric ranges for IDs and fatality:")
+    for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'fatality']:
+        if col in df_test.columns:
+            print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
+
+    return df_test
