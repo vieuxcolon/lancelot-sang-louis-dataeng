@@ -1680,6 +1680,39 @@ def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
         traceback.print_exc()
         sys.exit(1)
 
+        # ------------------------------------------------------------------------
+    # Step 5: Load MongoDB collection into Postgres table 'ariadb'
+    # ------------------------------------------------------------------------
+    try:
+        
+        conn = pg_connect()
+        cur = conn.cursor()
+        dst_table = "ariadb"
+
+        # Drop table if exists
+        cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+        # Create table with all columns as TEXT
+        col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+        cur.execute(f'CREATE TABLE "{dst_table}" ({col_defs})')
+
+        # Insert rows in batches
+        insert_sql = f"""
+            INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
+            VALUES ({", ".join(["%s"] * len(df.columns))})
+        """
+        for i in range(0, len(df), batch_size):
+            batch = df.iloc[i:i+batch_size]
+            cur.executemany(insert_sql, batch.where(pd.notnull(batch), None).values.tolist())
+
+        conn.commit()
+        conn.close()
+        print(f"✔ MongoDB collection loaded into Postgres table '{dst_table}' ({len(df)} rows)")
+
+    except Exception:
+        print("[ERROR] Failed to load ARIADB into Postgres")
+        traceback.print_exc()
+        sys.exit(1)
 
 # =====================================================================================
 # STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
