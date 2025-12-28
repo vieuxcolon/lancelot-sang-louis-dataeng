@@ -1026,12 +1026,10 @@ def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
 
 def create_workaccidents_clean():
     """
-    ETL function to load raw Workaccidents CSV into Postgres, then clean and create
-    the workaccidents_clean table.
+    DEBUG-INSTRUMENTED VERSION
+    ETL function to load raw Workaccidents CSV into Postgres,
+    then clean and create the workaccidents_clean table.
     """
-    import os
-    import pandas as pd
-
     # ----------------------------
     # Step 0: Define paths and tables
     # ----------------------------
@@ -1039,38 +1037,86 @@ def create_workaccidents_clean():
     src_table = DB_CONFIG["workaccidents_table"]
     dst_table = DB_CONFIG["workaccidents_clean_table"]
 
-    # ----------------------------
-    # Step 1a: Load raw CSV into Postgres
-    # ----------------------------
-    print(f"[INFO] Loading Workaccidents raw CSV into Postgres: {raw_csv_path}")
-    load_to_postgres(raw_csv_path, table_name=src_table, sep=",")
-    print(f"✔ Loaded Workaccidents raw table in Postgres from {raw_csv_path}")
+    print("\n🔎 DEBUG STEP 0 — PATH CHECK")
+    print(f"Expected CSV path: {raw_csv_path}")
+    print(f"File exists: {os.path.exists(raw_csv_path)}")
+    if os.path.exists(raw_csv_path):
+        print(f"File size (bytes): {os.path.getsize(raw_csv_path)}")
+    else:
+        print("❌ CSV NOT FOUND INSIDE CONTAINER")
 
     # ----------------------------
-    # Step 2: Read raw table
+    # Step 1: Load raw CSV into Postgres
+    # ----------------------------
+    print("\n🔎 DEBUG STEP 1 — load_to_postgres()")
+    print(f"Target raw table: {src_table}")
+
+    load_to_postgres(
+        raw_csv_path,
+        table_name=src_table,
+        sep=","
+    )
+
+    print("✔ load_to_postgres() returned")
+
+    # ----------------------------
+    # Step 2: Verify raw table population
     # ----------------------------
     conn = pg_connect()
-    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
-    print(f"[INFO] Loaded {len(df)} rows from raw table '{src_table}'")
+
+    print("\n🔎 DEBUG STEP 2 — RAW TABLE CHECK")
+    try:
+        df_raw = pd.read_sql(f'SELECT * FROM "{src_table}" LIMIT 5', conn)
+        count_df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{src_table}"', conn)
+        print(f"Rows in raw table '{src_table}': {count_df['cnt'][0]}")
+        print("Sample rows:")
+        print(df_raw.head())
+    except Exception as e:
+        print("❌ FAILED TO READ RAW TABLE")
+        print(e)
+        conn.close()
+        raise
 
     # ----------------------------
     # Step 3: Cleaning & normalization
     # ----------------------------
+    print("\n🔎 DEBUG STEP 3 — CLEANING PHASE")
+
+    df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
+    print(f"Rows loaded into pandas for cleaning: {len(df)}")
+
+    if len(df) == 0:
+        print("❌ NO ROWS TO CLEAN — STOPPING HERE")
+        conn.close()
+        return
+
+    print("Columns in raw df:")
+    print(list(df.columns))
+
     # Drop unnecessary column
     if "final_narrative" in df.columns:
         df.drop(columns=["final_narrative"], inplace=True)
 
     # Normalize accident date
     date_col = "eventdate" if "eventdate" in df.columns else None
+    print(f"Detected date column: {date_col}")
+
     if date_col:
-        df["accident_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["accident_date"] = pd.to_datetime(
+            df[date_col], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        print("Sample accident_date values:")
+        print(df["accident_date"].head())
     else:
         df["accident_date"] = None
+        print("❌ No date column found")
 
-    # Normalize country (USA for all workaccidents)
+    # Normalize country
     df["country"] = "USA"
 
-    # Select relevant columns
+    # ----------------------------
+    # Step 4: Select columns
+    # ----------------------------
     selected_columns = [
         "id", "upa", "accident_date", "employer", "address1", "address2",
         "city", "state", "zip", "latitude", "longitude", "primary_naics",
@@ -1079,35 +1125,48 @@ def create_workaccidents_clean():
         "eventtitle", "source", "sourcetitle", "secondary_source",
         "secondary_source_title", "federalstate", "country",
     ]
+
     df_clean = df[[c for c in selected_columns if c in df.columns]].copy()
+    print(f"Rows after column selection: {len(df_clean)}")
+    print(f"Columns in clean df: {list(df_clean.columns)}")
 
-    # Deduplicate by 'upa'
+    # Deduplicate
     if "upa" in df_clean.columns:
+        before = len(df_clean)
         df_clean = df_clean.drop_duplicates(subset=["upa"])
+        print(f"Deduplicated by upa: {before} → {len(df_clean)} rows")
 
     # ----------------------------
-    # Step 4: Create clean table in Postgres
+    # Step 5: Create clean table
     # ----------------------------
+    print("\n🔎 DEBUG STEP 5 — INSERT CLEAN TABLE")
+
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
 
     col_defs = ", ".join([f'"{c}" TEXT' for c in df_clean.columns])
     cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs});')
 
-    # Insert rows
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df_clean.columns])})
         VALUES ({", ".join(["%s"] * len(df_clean.columns))})
     """
+
+    inserted = 0
     for _, row in df_clean.iterrows():
         cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+        inserted += 1
 
     conn.commit()
     conn.close()
-    print(f"✔ Created workaccidents_clean ({len(df_clean)} rows)")
+
+    print(f"✔ Created {dst_table} with {inserted} rows")
 
 
+# ====================================================================================
 # 3️⃣ FATALITIES
+#=====================================================================================
+
 def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
 
