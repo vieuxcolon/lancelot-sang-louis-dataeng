@@ -340,50 +340,72 @@ def download_all_fatalities():
 
 def read_csv_robust(csv_input, sep=",", skiprows=0, dtype=str):
     """
-    Robust CSV reader.
-    csv_input can be:
-    - a filesystem path to a CSV file
-    - a string containing CSV content
+    Robust CSV reader with fallback encodings.
+
+    Parameters
+    ----------
+    csv_input : str
+        Either a filesystem path to a CSV file, or a string containing CSV content.
+    sep : str
+        CSV separator (default ",").
+    skiprows : int
+        Number of rows to skip at the top of the file.
+    dtype : type or dict
+        Column data types.
+
+    Returns
+    -------
+    pd.DataFrame
+        Loaded DataFrame.
     """
-
-    import os
-    from io import StringIO
-    import pandas as pd
-
     encodings = ["utf-8", "latin1"]
 
-    for enc in encodings:
-        try:
-            # CASE 1: csv_input is a file path
-            if isinstance(csv_input, str) and os.path.exists(csv_input):
-                print(f"✔ CSV read from file path using {enc} encoding")
-                return pd.read_csv(
+    # ----------------------------
+    # Case 1: CSV file path
+    # ----------------------------
+    if isinstance(csv_input, str) and os.path.exists(csv_input):
+        for enc in encodings:
+            try:
+                print(f"[INFO] Attempting to read CSV file '{csv_input}' using {enc} encoding")
+                df = pd.read_csv(
                     csv_input,
                     sep=sep,
                     skiprows=skiprows,
                     dtype=dtype,
                     encoding=enc,
-                    low_memory=False,
-                    engine="python",
+                    low_memory=False
                 )
+                print(f"✔ CSV read from file path using {enc} encoding")
+                return df
+            except Exception as e:
+                print(f"⚠ Failed with {enc} encoding: {e}")
+        raise ValueError(f"Failed to read CSV file '{csv_input}' with UTF-8 or Latin-1 encoding")
 
-            # CASE 2: csv_input is CSV content
-            else:
-                print(f"✔ CSV read from in-memory content using {enc} encoding")
-                return pd.read_csv(
+    # ----------------------------
+    # Case 2: In-memory CSV content
+    # ----------------------------
+    if isinstance(csv_input, str):
+        for enc in encodings:
+            try:
+                print(f"[INFO] Attempting to read CSV content using {enc} encoding")
+                df = pd.read_csv(
                     StringIO(csv_input),
                     sep=sep,
                     skiprows=skiprows,
                     dtype=dtype,
                     encoding=enc,
-                    low_memory=False,
-                    engine="python",
+                    low_memory=False
                 )
+                print(f"✔ CSV read from content using {enc} encoding")
+                return df
+            except Exception as e:
+                print(f"⚠ Failed with {enc} encoding: {e}")
+        raise ValueError("Failed to read CSV content with UTF-8 or Latin-1 encoding")
 
-        except Exception:
-            continue
-
-    raise ValueError("Failed to read CSV with UTF-8 or Latin-1 encoding")
+    # ----------------------------
+    # Invalid input type
+    # ----------------------------
+    raise ValueError("csv_input must be a file path or CSV content string")
 
 
 # =====================================================================================
