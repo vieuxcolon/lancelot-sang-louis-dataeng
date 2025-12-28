@@ -1578,100 +1578,80 @@ def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
 
     print(f"✔ Profile saved to {profile_path}")
     conn.close()
+    
 
 def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
     """
-    End-to-end flow:
-        Source CSV (URL)
-            → MongoDB temp collection (batch inserts)
-            → Atomic rename to main collection
-            → Export back to CSV ($DATA_DIR/ariadb.csv)
-
-    The output CSV filename is fixed by contract. Batch inserts prevent memory issues.
+    Download ARIADB from web, load into MongoDB, export CSV, and load raw data into Postgres.
+    Steps:
+      1. Download CSV from source
+      2. Load into MongoDB
+      3. Export MongoDB collection to CSV
+      4. Create 'ariadb' raw table in Postgres and insert data
     """
-    print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
+   
+    # ----------------------------
+    # Step 1: Download CSV from web
+    # ----------------------------
+    print("[INFO] Step 1: Downloading ARIADB from source")
+    rows = download_csv_from_web(url)
+    print(f"[INFO] Downloaded {len(rows)} rows")
 
-    # ------------------------------------------------------------------------
-    # Step 1: Download CSV from source URL
-    # ------------------------------------------------------------------------
-    try:
-        print("[DEBUG] Attempting UTF-8 CSV read")
-        df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
-        print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
-    except UnicodeDecodeError:
-        print("[WARNING] UTF-8 failed, trying latin1")
-        try:
-            df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
-            print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
-        except Exception:
-            print("[ERROR] CSV read failed (latin1)")
-            traceback.print_exc()
-            sys.exit(1)
-    except Exception:
-        print("[ERROR] CSV download failed")
-        traceback.print_exc()
-        sys.exit(1)
+    # ----------------------------
+    # Step 2: Load into MongoDB
+    # ----------------------------
+    print("[INFO] Step 2: Loading rows into MongoDB")
+    load_rows_into_mongo(rows)
 
-    # ------------------------------------------------------------------------
-    # Step 2: Add ETL metadata
-    # ------------------------------------------------------------------------
-    try:
-        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        df["_etl_run_id"] = run_id
-        df["_etl_loaded_at"] = datetime.utcnow()
-        print(f"[DEBUG] ETL metadata added (_etl_run_id={run_id})")
-    except Exception:
-        print("[ERROR] Failed to add ETL metadata")
-        traceback.print_exc()
-        sys.exit(1)
+    # ----------------------------
+    # Step 3: Export to CSV
+    # ----------------------------
+    csv_filename = "ariadb.csv"
+    print(f"[INFO] Step 3: Exporting MongoDB collection to CSV {csv_filename}")
+    export_mongo_to_csv(csv_filename)
 
-    # ------------------------------------------------------------------------
-    # Step 3: Load into MongoDB (temp → atomic rename) with batch inserts
-    # ------------------------------------------------------------------------
+    # ----------------------------
+    # Step 4: Insert raw data into Postgres
+    # ----------------------------
+    print("[INFO] Step 4: Loading ARIADB raw data into Postgres table 'ariadb'")
     client = get_mongo_client()
     db = client[MONGO_DB]
-    tmp_coll_name = f"{MONGO_COLLECTION}_tmp"
-    tmp_coll = db[tmp_coll_name]
+    collection = db[MONGO_COLLECTION]
 
-    try:
-        # Drop tmp collection if exists
-        if tmp_coll_name in db.list_collection_names():
-            db.drop_collection(tmp_coll_name)
+    df = pd.DataFrame(list(collection.find({}, {"_id": 0})))
+    client.close()
 
-        # Batch insert to avoid memory issues
-        records = df.to_dict(orient="records")
-        for i in range(0, len(records), batch_size):
-            batch = records[i:i+batch_size]
-            tmp_coll.insert_many(batch)
+    if df.empty:
+        raise RuntimeError("MongoDB collection is empty — cannot load into Postgres")
 
-        # Verify row count
-        if tmp_coll.count_documents({}) != len(df):
-            raise RuntimeError("Row count mismatch after Mongo insert")
+    conn = pg_connect()
+    cursor = conn.cursor()
 
-        # Atomic rename
-        if MONGO_COLLECTION in db.list_collection_names():
-            db.drop_collection(MONGO_COLLECTION)
-        tmp_coll.rename(MONGO_COLLECTION)
-        print(f"[DEBUG] Mongo atomic rename: {tmp_coll_name} → {MONGO_COLLECTION}")
-    except Exception:
-        print("[ERROR] MongoDB load/rename failed")
-        traceback.print_exc()
-        sys.exit(1)
-    finally:
-        client.close()
-        print("✔ MongoDB connection closed")
+    # Drop table if exists
+    cursor.execute('DROP TABLE IF EXISTS "ariadb"')
 
-    # ------------------------------------------------------------------------
-    # Step 4: Export MongoDB → CSV (fixed path)
-    # ------------------------------------------------------------------------
-    try:
-        print(f"[INFO] Exporting MongoDB collection '{MONGO_DB}.{MONGO_COLLECTION}' → 'ariadb.csv'")
-        export_mongo_to_csv("ariadb.csv")
-        print(f"[OK] ariadb.csv written to {DATA_DIR}")
-    except Exception:
-        print("[ERROR] MongoDB export to CSV failed")
-        traceback.print_exc()
-        sys.exit(1)
+    # Create table with all columns as TEXT (match your prep style)
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    cursor.execute(f'CREATE TABLE "ariadb" ({col_defs})')
+
+    # Batch insert to avoid memory issues
+    insert_sql = f"""
+        INSERT INTO "ariadb" ({", ".join([f'"{c}"' for c in df.columns])})
+        VALUES ({", ".join(["%s"] * len(df.columns))})
+    """
+    batch = []
+    for _, row in df.iterrows():
+        batch.append([None if pd.isna(v) else v for v in row.values])
+        if len(batch) >= batch_size:
+            psycopg2.extras.execute_values(cursor, insert_sql, batch)
+            batch = []
+
+    if batch:
+        psycopg2.extras.execute_values(cursor, insert_sql, batch)
+
+    conn.commit()
+    conn.close()
+    print(f"✔ ARIADB raw table in Postgres created with {len(df)} rows")
 
 
 # =====================================================================================
