@@ -1785,26 +1785,37 @@ def create_dimensions(*args, **kwargs):
 import pandas as pd
 from psycopg2.extras import execute_values
 
+import psycopg2.extras
+
 def populate_fact(*args, **kwargs):
     """
-    Populates the fact_accidents table from prep tables and dimension tables.
-    Correctly maps foreign keys from dimensions to prep table columns.
-    Uses bulk insert for performance and avoids outdated 'name' columns.
+    Populates the fact table from prep tables and dimension tables.
+    Uses bulk insert for performance and ensures type compatibility with PostgreSQL.
     """
     conn = pg_connect()
     cur = conn.cursor()
 
     print("🔎 Loading prep tables for fact table population...")
 
-    # Load prep tables (normalized)
+    # ----------------------------
+    # Load prep tables
+    # ----------------------------
     df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
     df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
     df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
 
+    # Combine prep tables
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-    print(f"Combined prep rows: {len(df_fact)}")
 
+    # ----------------------------
+    # Standardize columns
+    # ----------------------------
+    df_fact['date'] = df_fact['date'].astype(str).str.strip()
+    df_fact['country'] = df_fact['country'].astype(str).str.strip().str.upper()
+
+    # ----------------------------
     # Load dimension tables
+    # ----------------------------
     dim_industry = pd.read_sql('SELECT industry_id, industry_code FROM dim_industry', conn)
     dim_accident_type = pd.read_sql('SELECT accident_type_id, accident_type FROM dim_accident_type', conn)
     dim_hazard = pd.read_sql('SELECT hazard_id, hazard_class FROM dim_hazard', conn)
@@ -1812,8 +1823,11 @@ def populate_fact(*args, **kwargs):
     dim_country = pd.read_sql('SELECT country_id, country_name FROM dim_country', conn)
     dim_date = pd.read_sql('SELECT date_id, date FROM dim_date', conn)
 
+    dim_country['country_name'] = dim_country['country_name'].astype(str).str.strip().str.upper()
+    dim_date['date'] = dim_date['date'].astype(str).str.strip()
+
     # ----------------------------
-    # Map foreign keys
+    # Merge foreign keys
     # ----------------------------
     df_fact = df_fact.merge(dim_industry, how='left', left_on='industry_code', right_on='industry_code')
     df_fact = df_fact.merge(dim_accident_type, how='left', left_on='accident_type', right_on='accident_type')
@@ -1823,42 +1837,37 @@ def populate_fact(*args, **kwargs):
     df_fact = df_fact.merge(dim_date, how='left', left_on='date', right_on='date')
 
     # ----------------------------
-    # Check for missing foreign keys
+    # Optional: check missing FKs
     # ----------------------------
-    missing_fks = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id']].isna().sum()
-    if missing_fks.any():
+    missing_fk_counts = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id']].isna().sum()
+    if missing_fk_counts.any():
         print("⚠ Warning: Missing foreign keys in fact table mapping")
-        print(missing_fks)
+        print(missing_fk_counts)
 
     # ----------------------------
-    # Prepare final fact table columns
+    # Prepare rows for bulk insert
     # ----------------------------
     df_fact_final = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id',
-                             'hazard_id', 'employer_id', 'fatality']].copy()
+                             'hazard_id', 'employer_id', 'fatality']]
 
-    # Ensure fatality column exists, fill missing with 0
-    if 'fatality' not in df_fact_final.columns:
-        df_fact_final['fatality'] = 0
-    else:
-        df_fact_final['fatality'] = df_fact_final['fatality'].fillna(0)
+    # Convert all columns to Python native types (avoid numpy.int64)
+    df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
+    rows_to_insert = [tuple(x) for x in df_fact_final.to_numpy()]
 
     # ----------------------------
-    # Bulk insert into fact_accidents
+    # Bulk insert using execute_values
     # ----------------------------
-    records = df_fact_final.to_records(index=False)
-    execute_values(
-        cur,
-        """
-        INSERT INTO fact_accidents
-            (date_id, country_id, industry_id, accident_type_id, hazard_id, employer_id, fatality)
-        VALUES %s
-        """,
-        records
-    )
-
+    sql = """
+        INSERT INTO fact_accidents (
+            date_id, country_id, industry_id, accident_type_id,
+            hazard_id, employer_id, fatality
+        ) VALUES %s
+    """
+    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
     conn.commit()
     conn.close()
-    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows")
+
+    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows (bulk insert)")
 
 
 def populate_dimensions(*args, **kwargs):
