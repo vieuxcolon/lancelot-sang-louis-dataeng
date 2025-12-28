@@ -1353,7 +1353,7 @@ def create_ariadb_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename date
+    # 1️⃣ Rename and convert date to string YYYY-MM-DD
     if "incident_date" in df.columns:
         df["date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["incident_date"], inplace=True)
@@ -1361,38 +1361,48 @@ def create_ariadb_prep():
     # 2️⃣ Normalize country
     if "country" in df.columns:
         df = normalize_country(df, "country")
-
-    # 3️⃣ Add fatality flag based on hazard_class
-    if "hazard_class" in df.columns:
-        df["fatality"] = df["hazard_class"].apply(
-            lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
-        )
     else:
-        df["fatality"] = 0
+        df["country"] = "UNKNOWN"
 
-    # 4️⃣ Drop rows where all key columns are null
+    # 3️⃣ Convert numeric IDs
+    for col in ["industry_code", "aria_id"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    # 4️⃣ Add fatality flag based on hazard_class
+    df["fatality"] = df.get("hazard_class", "").apply(
+        lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
+    )
+
+    # 5️⃣ Drop rows where all key columns are null
     key_cols = ["aria_id","date","country","department","municipality","hazard_class","industry_code"]
     existing_keys = [c for c in key_cols if c in df.columns]
-    if existing_keys:
-        df = df.dropna(how="all", subset=existing_keys)
+    df = df.dropna(how="all", subset=existing_keys)
 
-    # 5️⃣ Drop rows with only PK populated
+    # 6️⃣ Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "aria_id"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 6️⃣ Deduplicate on PK
+    # 7️⃣ Deduplicate on PK
     if "aria_id" in df.columns:
         df = df.drop_duplicates(subset=["aria_id"])
 
-    # 7️⃣ Create prep table
+    # 8️⃣ Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    col_defs = []
+    for c in df.columns:
+        if c in ["aria_id","industry_code"]:
+            col_defs.append(f'"{c}" BIGINT')
+        elif c == "fatality":
+            col_defs.append(f'"{c}" INT')
+        else:
+            col_defs.append(f'"{c}" TEXT')
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 8️⃣ Insert data
+    # 9️⃣ Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1404,49 +1414,59 @@ def create_ariadb_prep():
     conn.close()
     print(f"✔ Created ariadb_prep ({len(df)} rows)")
 
-
 def create_workaccidents_prep():
     src_table = DB_CONFIG["workaccidents_clean_table"]
     dst_table = DB_CONFIG["workaccidents_prep_table"]
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename date
+    # 1️⃣ Rename and convert date
     if "accident_date" in df.columns:
         df["date"] = pd.to_datetime(df["accident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["accident_date"], inplace=True)
 
-    # 2️⃣ Normalize country (default USA)
+    # 2️⃣ Normalize country
     if "country" not in df.columns:
         df["country"] = "USA"
     df = normalize_country(df, "country")
 
-    # 3️⃣ Add fatality
-    df["fatality"] = df["naturetitle"].apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0) if "naturetitle" in df.columns else 0
+    # 3️⃣ Convert numeric IDs
+    for col in ["upa","primary_naics"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    # 4️⃣ Drop rows where all key columns are null
+    # 4️⃣ Add fatality flag based on naturetitle
+    df["fatality"] = df.get("naturetitle", "").apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0)
+
+    # 5️⃣ Drop rows where all key columns are null
     key_cols = ["upa","id","date","country","employer","city","state","primary_naics","event","naturetitle"]
     existing_keys = [c for c in key_cols if c in df.columns]
-    if existing_keys:
-        df = df.dropna(how="all", subset=existing_keys)
+    df = df.dropna(how="all", subset=existing_keys)
 
-    # 5️⃣ Drop rows with only PK populated
+    # 6️⃣ Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "upa"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 6️⃣ Deduplicate on PK
+    # 7️⃣ Deduplicate on PK
     if "upa" in df.columns:
         df = df.drop_duplicates(subset=["upa"])
 
-    # 7️⃣ Create prep table
+    # 8️⃣ Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    col_defs = []
+    for c in df.columns:
+        if c in ["upa","primary_naics"]:
+            col_defs.append(f'"{c}" BIGINT')
+        elif c == "fatality":
+            col_defs.append(f'"{c}" INT')
+        else:
+            col_defs.append(f'"{c}" TEXT')
     pk = ", PRIMARY KEY (upa)" if "upa" in df.columns else ""
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 8️⃣ Insert data
+    # 9️⃣ Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1458,14 +1478,13 @@ def create_workaccidents_prep():
     conn.close()
     print(f"✔ Created workaccidents_prep ({len(df)} rows)")
 
-
 def create_fatalities_prep():
     src_table = DB_CONFIG["fatalities_clean_table"]
     dst_table = DB_CONFIG["fatalities_prep_table"]
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename date
+    # 1️⃣ Convert date
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
@@ -1474,7 +1493,7 @@ def create_fatalities_prep():
         df["country"] = "UNKNOWN"
     df = normalize_country(df, "country")
 
-    # 3️⃣ Add fatality
+    # 3️⃣ Convert fatality column to int
     if "no_of_fatalities" in df.columns:
         df["fatality"] = df["no_of_fatalities"].apply(lambda x: 1 if pd.notna(x) and x > 0 else 0)
     else:
@@ -1493,12 +1512,19 @@ def create_fatalities_prep():
     if "fatality_id" in df.columns:
         df = df.drop_duplicates(subset=["fatality_id"])
 
-    # 7️⃣ Create prep table
+    # 7️⃣ Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    col_defs = []
+    for c in df.columns:
+        if c == "fatality_id":
+            col_defs.append(f'"{c}" BIGINT')
+        elif c == "fatality":
+            col_defs.append(f'"{c}" INT')
+        else:
+            col_defs.append(f'"{c}" TEXT')
     pk = ", PRIMARY KEY (fatality_id)" if "fatality_id" in df.columns else ""
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({col_defs}{pk});')
+    cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
     # 8️⃣ Insert data
     insert_sql = f"""
@@ -1511,6 +1537,7 @@ def create_fatalities_prep():
     conn.commit()
     conn.close()
     print(f"✔ Created fatalities_prep ({len(df)} rows)")
+
 
 # =====================================================================================
 # DATABASE PROFILING
@@ -1785,10 +1812,9 @@ def create_dimensions(*args, **kwargs):
 def populate_fact(*args, **kwargs):
     """
     Populates the fact_accidents table from prep tables and dimension tables.
-    Full debug: tracks prep source, handles BIGINT safely, NaNs -> None, duplicates,
-    missing FKs, numeric ranges, and bulk insert.
+    Prep tables already have correct types, so no further conversion needed.
+    Full debug: tracks prep source, duplicates, missing FKs, and bulk insert.
     """
- 
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1807,7 +1833,7 @@ def populate_fact(*args, **kwargs):
     print(df_fact['__source'].value_counts())
 
     # ----------------------------
-    # Standardize join columns
+    # Standardize join columns (strings only)
     # ----------------------------
     df_fact["date"] = df_fact["date"].astype(str).str.strip()
     df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
@@ -1835,78 +1861,36 @@ def populate_fact(*args, **kwargs):
     df_fact = df_fact.merge(dim_employer, how="left", on="employer")
     df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_date, how="left", on="date")
-    print("🔗 Merge complete. Checking for missing FKs...")
 
+    # ----------------------------
+    # FK checks
+    # ----------------------------
     fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
     missing_fk_counts = df_fact[fk_cols].isna().sum()
     print("⚠ Missing foreign keys count per column:")
     print(missing_fk_counts)
 
     # ----------------------------
-    # Show which prep sources contribute most to missing FKs
-    # ----------------------------
-    print("🔍 Inspecting prep sources for missing FKs...")
-    for col in fk_cols:
-        missing_source_counts = df_fact[df_fact[col].isna()]["__source"].value_counts()
-        print(f"Missing {col} by prep source:")
-        print(missing_source_counts)
-
-    # ----------------------------
-    # Check for duplicates
+    # Duplicate check
     # ----------------------------
     duplicate_count = df_fact.duplicated(subset=fk_cols + ["fatality"]).sum()
     print(f"🧩 Total duplicates (FKs + fatality): {duplicate_count}")
 
     # ----------------------------
-    # Prepare final fact table
+    # Prepare final fact table (already correctly typed)
     # ----------------------------
-    df_fact_final = df_fact[fk_cols + ["fatality", "__source"]].copy()
-
-    # Debug data types and numeric ranges
-    print("🧪 Fact final dtypes and numeric ranges BEFORE conversion:")
-    for col in fk_cols + ["fatality"]:
-        if pd.api.types.is_numeric_dtype(df_fact_final[col]):
-            print(f"{col}: dtype={df_fact_final[col].dtype}, min={df_fact_final[col].min()}, max={df_fact_final[col].max()}")
-        else:
-            print(f"{col}: dtype={df_fact_final[col].dtype}, sample_unique={df_fact_final[col].unique()[:5]}")
+    df_fact_final = df_fact[fk_cols + ["fatality"]].copy()
 
     # ----------------------------
-    # Convert FK columns to int (NaN -> None) safely
-    # ----------------------------
-    print("🔄 Converting FK columns to int and fatality to int (NaN -> None)...")
-    for col in fk_cols:
-        df_fact_final[col] = df_fact_final[col].apply(lambda x: int(x) if pd.notnull(x) else None)
-
-    df_fact_final["fatality"] = df_fact_final["fatality"].apply(lambda x: int(x) if pd.notnull(x) else 0)
-
-    # ----------------------------
-    # More debug: check rows with missing FK after conversion
-    # ----------------------------
-    missing_fk_rows = df_fact_final[df_fact_final[fk_cols].isna().any(axis=1)]
-    print(f"⚠ Rows with missing FKs after conversion: {len(missing_fk_rows)}")
-    if len(missing_fk_rows) > 0:
-        print("Sample rows with missing FKs (10):")
-        print(missing_fk_rows.head(10))
-
-        # Show prep source of these rows
-        print("Prep sources for rows with missing FKs:")
-        print(missing_fk_rows["__source"].value_counts())
-
-    # ----------------------------
-    # Drop missing FKs to avoid BIGINT issues
+    # Drop rows with missing FKs
     # ----------------------------
     df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
     print(f"🚀 Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
 
     # ----------------------------
-    # Convert to Python-native tuples
-    # ----------------------------
-    rows_to_insert = [tuple(x) for x in df_fact_final_clean[fk_cols + ["fatality"]].to_numpy()]
-    print(f"📤 Attempting bulk insert of {len(rows_to_insert)} rows...")
-
-    # ----------------------------
     # Bulk insert using execute_values
     # ----------------------------
+    rows_to_insert = [tuple(x) for x in df_fact_final_clean.to_numpy()]
     sql = """
         INSERT INTO fact_accidents (
             date_id, country_id, industry_id, accident_type_id,
@@ -1914,6 +1898,7 @@ def populate_fact(*args, **kwargs):
         ) VALUES %s
     """
     psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
+
     conn.commit()
     conn.close()
     print(f"✅ Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
