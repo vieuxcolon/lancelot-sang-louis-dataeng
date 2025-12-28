@@ -12,6 +12,9 @@ def print_section(title, df):
     print("="*80 + "\n")
     print(df.to_string(index=False))
 
+# ----------------------------
+# Fatalities by Year
+# ----------------------------
 def fatalities_by_year():
     conn = pg_connect()
     df = pd.read_sql("""
@@ -24,30 +27,39 @@ def fatalities_by_year():
     conn.close()
     print_section("Fatalities by Year", df)
 
+# ----------------------------
+# Fatalities by Country
+# ----------------------------
 def fatalities_by_country():
     conn = pg_connect()
     df = pd.read_sql("""
-        SELECT l.country, COUNT(*) AS total_fatalities
+        SELECT c.country_name AS country, COUNT(*) AS total_fatalities
         FROM fact_accidents f
-        JOIN dim_location l ON f.location_id = l.location_id
-        GROUP BY l.country
+        JOIN dim_country c ON f.country_id = c.country_id
+        GROUP BY c.country_name
         ORDER BY total_fatalities DESC
     """, conn)
     conn.close()
     print_section("Fatalities by Country", df)
 
+# ----------------------------
+# Fatalities by Industry
+# ----------------------------
 def fatalities_by_industry():
     conn = pg_connect()
     df = pd.read_sql("""
-        SELECT i.name, COUNT(*) AS total_fatalities
+        SELECT i.industry_code AS industry, COUNT(*) AS total_fatalities
         FROM fact_accidents f
         JOIN dim_industry i ON f.industry_id = i.industry_id
-        GROUP BY i.name
+        GROUP BY i.industry_code
         ORDER BY total_fatalities DESC
     """, conn)
     conn.close()
     print_section("Fatalities by Industry", df)
 
+# ----------------------------
+# DAG Definition
+# ----------------------------
 with DAG(
     dag_id="dag_data_analytics_validation",
     start_date=datetime(2025, 1, 1),
