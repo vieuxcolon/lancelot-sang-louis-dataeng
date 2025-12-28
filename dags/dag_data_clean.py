@@ -57,7 +57,7 @@ with DAG(
     # ----------------------------
     trigger_prep = TriggerDagRunOperator(
         task_id="trigger_data_prep",
-        trigger_dag_id="dag_data_prep",
+        trigger_dag_id="dag_data_cprep",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
