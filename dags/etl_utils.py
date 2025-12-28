@@ -1782,16 +1782,12 @@ def create_dimensions(*args, **kwargs):
 # Populate dimension tables
 # --------------------------
 
-import pandas as pd
-from psycopg2.extras import execute_values
-
-import psycopg2.extras
-
 def populate_fact(*args, **kwargs):
     """
-    Populates the fact table from prep tables and dimension tables.
-    Uses bulk insert for performance and ensures type compatibility with PostgreSQL.
+    Populates the fact_accidents table from prep tables and dimension tables.
+    Uses bulk insert, BIGINT-compatible types, and preserves FK diagnostics.
     """
+ 
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1800,74 +1796,129 @@ def populate_fact(*args, **kwargs):
     # ----------------------------
     # Load prep tables
     # ----------------------------
-    df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
-    df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
-    df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
+    df_aria = pd.read_sql("SELECT * FROM ariadb_prep", conn)
+    df_work = pd.read_sql("SELECT * FROM workaccidents_prep", conn)
+    df_fatal = pd.read_sql("SELECT * FROM fatalities_prep", conn)
 
-    # Combine prep tables
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
 
     # ----------------------------
-    # Standardize columns
+    # Standardize join columns
     # ----------------------------
-    df_fact['date'] = df_fact['date'].astype(str).str.strip()
-    df_fact['country'] = df_fact['country'].astype(str).str.strip().str.upper()
+    df_fact["date"] = df_fact["date"].astype(str).str.strip()
+    df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
 
     # ----------------------------
     # Load dimension tables
     # ----------------------------
-    dim_industry = pd.read_sql('SELECT industry_id, industry_code FROM dim_industry', conn)
-    dim_accident_type = pd.read_sql('SELECT accident_type_id, accident_type FROM dim_accident_type', conn)
-    dim_hazard = pd.read_sql('SELECT hazard_id, hazard_class FROM dim_hazard', conn)
-    dim_employer = pd.read_sql('SELECT employer_id, employer FROM dim_employer', conn)
-    dim_country = pd.read_sql('SELECT country_id, country_name FROM dim_country', conn)
-    dim_date = pd.read_sql('SELECT date_id, date FROM dim_date', conn)
+    dim_industry = pd.read_sql(
+        "SELECT industry_id, industry_code FROM dim_industry", conn
+    )
+    dim_accident_type = pd.read_sql(
+        "SELECT accident_type_id, accident_type FROM dim_accident_type", conn
+    )
+    dim_hazard = pd.read_sql(
+        "SELECT hazard_id, hazard_class FROM dim_hazard", conn
+    )
+    dim_employer = pd.read_sql(
+        "SELECT employer_id, employer FROM dim_employer", conn
+    )
+    dim_country = pd.read_sql(
+        "SELECT country_id, country_name FROM dim_country", conn
+    )
+    dim_date = pd.read_sql(
+        "SELECT date_id, date FROM dim_date", conn
+    )
 
-    dim_country['country_name'] = dim_country['country_name'].astype(str).str.strip().str.upper()
-    dim_date['date'] = dim_date['date'].astype(str).str.strip()
+    dim_country["country_name"] = (
+        dim_country["country_name"].astype(str).str.strip().str.upper()
+    )
+    dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
     # ----------------------------
     # Merge foreign keys
     # ----------------------------
-    df_fact = df_fact.merge(dim_industry, how='left', left_on='industry_code', right_on='industry_code')
-    df_fact = df_fact.merge(dim_accident_type, how='left', left_on='accident_type', right_on='accident_type')
-    df_fact = df_fact.merge(dim_hazard, how='left', left_on='hazard_class', right_on='hazard_class')
-    df_fact = df_fact.merge(dim_employer, how='left', left_on='employer', right_on='employer')
-    df_fact = df_fact.merge(dim_country, how='left', left_on='country', right_on='country_name')
-    df_fact = df_fact.merge(dim_date, how='left', left_on='date', right_on='date')
+    df_fact = df_fact.merge(
+        dim_industry, how="left", on="industry_code"
+    )
+    df_fact = df_fact.merge(
+        dim_accident_type, how="left", on="accident_type"
+    )
+    df_fact = df_fact.merge(
+        dim_hazard, how="left", on="hazard_class"
+    )
+    df_fact = df_fact.merge(
+        dim_employer, how="left", on="employer"
+    )
+    df_fact = df_fact.merge(
+        dim_country, how="left", left_on="country", right_on="country_name"
+    )
+    df_fact = df_fact.merge(
+        dim_date, how="left", on="date"
+    )
 
     # ----------------------------
-    # Optional: check missing FKs
+    # FK diagnostics (non-blocking)
     # ----------------------------
-    missing_fk_counts = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id']].isna().sum()
+    fk_cols = [
+        "date_id",
+        "country_id",
+        "industry_id",
+        "accident_type_id",
+        "hazard_id",
+        "employer_id",
+    ]
+
+    missing_fk_counts = df_fact[fk_cols].isna().sum()
     if missing_fk_counts.any():
         print("⚠ Warning: Missing foreign keys in fact table mapping")
         print(missing_fk_counts)
 
     # ----------------------------
-    # Prepare rows for bulk insert
+    # Prepare fact rows
     # ----------------------------
-    df_fact_final = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id',
-                             'hazard_id', 'employer_id', 'fatality']]
+    df_fact_final = df_fact[
+        [
+            "date_id",
+            "country_id",
+            "industry_id",
+            "accident_type_id",
+            "hazard_id",
+            "employer_id",
+            "fatality",
+        ]
+    ]
 
-    # Convert all columns to Python native types (avoid numpy.int64)
+    # Convert NaN → None and numpy → native Python
     df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
-    rows_to_insert = [tuple(x) for x in df_fact_final.to_numpy()]
+    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
 
     # ----------------------------
-    # Bulk insert using execute_values
+    # Bulk insert
     # ----------------------------
-    sql = """
+    insert_sql = """
         INSERT INTO fact_accidents (
-            date_id, country_id, industry_id, accident_type_id,
-            hazard_id, employer_id, fatality
+            date_id,
+            country_id,
+            industry_id,
+            accident_type_id,
+            hazard_id,
+            employer_id,
+            fatality
         ) VALUES %s
     """
-    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
+
+    psycopg2.extras.execute_values(
+        cur,
+        insert_sql,
+        rows_to_insert,
+        page_size=1000
+    )
+
     conn.commit()
     conn.close()
 
-    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows (bulk insert)")
+    print(f"✅ Fact table populated successfully with {len(rows_to_insert)} rows")
 
 
 def populate_dimensions(*args, **kwargs):
@@ -1990,41 +2041,27 @@ def drop_fact(*args, **kwargs):
 # --------------------------
 # Create fact table
 # --------------------------
+
 def create_fact(*args, **kwargs):
-    """
-    Creates the fact_accidents table structure (without data).
-    Aligned with populate_fact foreign keys and measures.
-    """
     conn = pg_connect()
     cur = conn.cursor()
 
-    # Drop first to avoid schema drift during refactors
     cur.execute("""
-        DROP TABLE IF EXISTS fact_accidents CASCADE;
-    """)
-
-    cur.execute("""
-        CREATE TABLE fact_accidents (
-            fact_id SERIAL PRIMARY KEY,
-
-            -- Foreign keys to dimensions
-            date_id INT REFERENCES dim_date(date_id),
-            country_id INT REFERENCES dim_country(country_id),
-            industry_id INT REFERENCES dim_industry(industry_id),
-            accident_type_id INT REFERENCES dim_accident_type(accident_type_id),
-            hazard_id INT REFERENCES dim_hazard(hazard_id),
-            employer_id INT REFERENCES dim_employer(employer_id),
-
-            -- Measures
+        CREATE TABLE IF NOT EXISTS fact_accidents (
+            date_id BIGINT,
+            country_id BIGINT,
+            industry_id BIGINT,
+            accident_type_id BIGINT,
+            hazard_id BIGINT,
+            employer_id BIGINT,
             fatality TEXT
         )
     """)
 
     conn.commit()
     conn.close()
-
     print("✅ fact_accidents table created successfully")
-
+    
 
 # ------------------------------
 # MINIMAL STAR SCHEMA TEST
