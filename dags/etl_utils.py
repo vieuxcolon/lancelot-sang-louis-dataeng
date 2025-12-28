@@ -1293,9 +1293,11 @@ def create_fatalities_clean():
     for fname, fn in cleaners:
         src = os.path.join(DATA_DIR, fname)
         dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
+
         if not os.path.exists(src):
             print(f"⚠ File not found, skipping: {src}")
             continue
+
         rows = fn(src, dst)
         print(f"✔ {fname} → {rows} rows cleaned")
         dfs.append(pd.read_csv(dst))
@@ -1303,9 +1305,47 @@ def create_fatalities_clean():
     if not dfs:
         raise RuntimeError("No fatalities files were cleaned")
 
+    # --------------------------------------------------
+    # Merge all cleaned files
+    # --------------------------------------------------
     final_df = pd.concat(dfs, ignore_index=True)
 
-    # Normalize country
+    # --------------------------------------------------
+    # 🔹 NEW: Persist RAW fatalities table (before any normalization)
+    # --------------------------------------------------
+    conn = pg_connect()
+    cur = conn.cursor()
+
+    print("🧱 Creating raw fatalities table in Postgres")
+
+    cur.execute("DROP TABLE IF EXISTS fatalities")
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in final_df.columns])
+    cur.execute(f"""
+        CREATE TABLE fatalities (
+            {col_defs}
+        )
+    """)
+
+    insert_sql = f"""
+        INSERT INTO fatalities ({", ".join([f'"{c}"' for c in final_df.columns])})
+        VALUES ({", ".join(["%s"] * len(final_df.columns))})
+    """
+
+    for _, row in final_df.iterrows():
+        cur.execute(
+            insert_sql,
+            [None if pd.isna(v) else str(v) for v in row.values]
+        )
+
+    conn.commit()
+    print(f"✔ Raw fatalities table created ({len(final_df)} rows)")
+
+    # --------------------------------------------------
+    # Continue EXISTING behavior unchanged
+    # --------------------------------------------------
+
+    # Normalize country for CLEAN dataset
     final_df = normalize_country(final_df, "country")
 
     final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
@@ -1315,7 +1355,9 @@ def create_fatalities_clean():
     load_fatalities_to_postgres()
     print("✔ fatalities_clean loaded into Postgres")
 
-    
+    conn.close()
+
+   
 def normalize_country(df, column_name):
     """
     Normalize country values in a DataFrame column.
