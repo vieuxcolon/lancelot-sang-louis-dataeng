@@ -338,21 +338,51 @@ def download_all_fatalities():
 # CSV READING
 # =====================================================================================
 
+def read_csv_robust(csv_input, sep=",", skiprows=0, dtype=str):
+    """
+    Robust CSV reader.
+    csv_input can be:
+    - a filesystem path to a CSV file
+    - a string containing CSV content
+    """
 
-def read_csv_robust(csv_content, sep=",", skiprows=0, dtype=str):
+    import os
+    from io import StringIO
+    import pandas as pd
+
     encodings = ["utf-8", "latin1"]
+
     for enc in encodings:
         try:
-            return pd.read_csv(
-                StringIO(csv_content),
-                sep=sep,
-                skiprows=skiprows,
-                dtype=dtype,
-                encoding=enc,
-                low_memory=False,
-            )
+            # CASE 1: csv_input is a file path
+            if isinstance(csv_input, str) and os.path.exists(csv_input):
+                print(f"✔ CSV read from file path using {enc} encoding")
+                return pd.read_csv(
+                    csv_input,
+                    sep=sep,
+                    skiprows=skiprows,
+                    dtype=dtype,
+                    encoding=enc,
+                    low_memory=False,
+                    engine="python",
+                )
+
+            # CASE 2: csv_input is CSV content
+            else:
+                print(f"✔ CSV read from in-memory content using {enc} encoding")
+                return pd.read_csv(
+                    StringIO(csv_input),
+                    sep=sep,
+                    skiprows=skiprows,
+                    dtype=dtype,
+                    encoding=enc,
+                    low_memory=False,
+                    engine="python",
+                )
+
         except Exception:
             continue
+
     raise ValueError("Failed to read CSV with UTF-8 or Latin-1 encoding")
 
 
