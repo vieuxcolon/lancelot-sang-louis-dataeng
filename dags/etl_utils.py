@@ -1782,23 +1782,27 @@ def create_dimensions(*args, **kwargs):
 # Populate dimension tables
 # --------------------------
 
+import pandas as pd
+from psycopg2.extras import execute_values
+
 def populate_fact(*args, **kwargs):
     """
-    Populates the fact table from prep tables and dimension tables.
-    Correctly maps foreign keys to dimension columns.
+    Populates the fact_accidents table from prep tables and dimension tables.
+    Correctly maps foreign keys from dimensions to prep table columns.
+    Uses bulk insert for performance and avoids outdated 'name' columns.
     """
     conn = pg_connect()
     cur = conn.cursor()
 
     print("🔎 Loading prep tables for fact table population...")
 
-    # Load prep tables
+    # Load prep tables (normalized)
     df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
     df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
     df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
 
-    # Combine all prep tables into a single dataframe
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
+    print(f"Combined prep rows: {len(df_fact)}")
 
     # Load dimension tables
     dim_industry = pd.read_sql('SELECT industry_id, industry_code FROM dim_industry', conn)
@@ -1808,7 +1812,9 @@ def populate_fact(*args, **kwargs):
     dim_country = pd.read_sql('SELECT country_id, country_name FROM dim_country', conn)
     dim_date = pd.read_sql('SELECT date_id, date FROM dim_date', conn)
 
-    # Map foreign keys for fact table
+    # ----------------------------
+    # Map foreign keys
+    # ----------------------------
     df_fact = df_fact.merge(dim_industry, how='left', left_on='industry_code', right_on='industry_code')
     df_fact = df_fact.merge(dim_accident_type, how='left', left_on='accident_type', right_on='accident_type')
     df_fact = df_fact.merge(dim_hazard, how='left', left_on='hazard_class', right_on='hazard_class')
@@ -1816,23 +1822,39 @@ def populate_fact(*args, **kwargs):
     df_fact = df_fact.merge(dim_country, how='left', left_on='country', right_on='country_name')
     df_fact = df_fact.merge(dim_date, how='left', left_on='date', right_on='date')
 
-    # Optional: select only the columns you want in the fact table
-    fact_columns = [
-        'date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id',
-        'fatality', 'source_column1', 'source_column2'  # Add any extra fact columns here
-    ]
-    df_fact_final = df_fact[fact_columns]
+    # ----------------------------
+    # Check for missing foreign keys
+    # ----------------------------
+    missing_fks = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id']].isna().sum()
+    if missing_fks.any():
+        print("⚠ Warning: Missing foreign keys in fact table mapping")
+        print(missing_fks)
 
-    # Insert into fact table
-    for _, row in df_fact_final.iterrows():
-        cur.execute("""
-            INSERT INTO fact_accidents (
-                date_id, country_id, industry_id, accident_type_id, hazard_id, employer_id, fatality
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s)
-        """, (
-            row['date_id'], row['country_id'], row['industry_id'], row['accident_type_id'],
-            row['hazard_id'], row['employer_id'], row.get('fatality')
-        ))
+    # ----------------------------
+    # Prepare final fact table columns
+    # ----------------------------
+    df_fact_final = df_fact[['date_id', 'country_id', 'industry_id', 'accident_type_id',
+                             'hazard_id', 'employer_id', 'fatality']].copy()
+
+    # Ensure fatality column exists, fill missing with 0
+    if 'fatality' not in df_fact_final.columns:
+        df_fact_final['fatality'] = 0
+    else:
+        df_fact_final['fatality'] = df_fact_final['fatality'].fillna(0)
+
+    # ----------------------------
+    # Bulk insert into fact_accidents
+    # ----------------------------
+    records = df_fact_final.to_records(index=False)
+    execute_values(
+        cur,
+        """
+        INSERT INTO fact_accidents
+            (date_id, country_id, industry_id, accident_type_id, hazard_id, employer_id, fatality)
+        VALUES %s
+        """,
+        records
+    )
 
     conn.commit()
     conn.close()
