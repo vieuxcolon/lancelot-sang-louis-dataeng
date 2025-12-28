@@ -1513,7 +1513,7 @@ def log_and_count(func, step_name, table_name=None):
     return wrapped
 
 
-def populate_fact():
+def populate_fact(*args, **kwargs):
     import pandas as pd
     from psycopg2.extras import execute_values
 
@@ -1565,7 +1565,8 @@ def populate_fact():
     conn.commit()
     conn.close()
 
-def create_fact():
+
+def create_fact(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1583,7 +1584,7 @@ def create_fact():
     conn.commit()
     conn.close()
 
-def drop_fact():
+def drop_fact(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1593,7 +1594,7 @@ def drop_fact():
     conn.close()
 
 
-def drop_dimensions():
+def drop_dimensions(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1616,7 +1617,7 @@ def drop_dimensions():
     conn.close()
 
 
-def create_dimensions():
+def create_dimensions(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1655,7 +1656,7 @@ def create_dimensions():
     conn.close()
 
 
-def populate_dimensions():
+def populate_dimensions(*args, **kwargs):
     import pandas as pd
     from psycopg2.extras import execute_values
 
