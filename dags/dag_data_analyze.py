@@ -1,10 +1,22 @@
-# =================== dag_data_analyze.py =======================================
-# Purpose:
-#   This DAG performs the full ETL and validation process for the star schema
-#   used in the analytics pipeline. It builds dimension and fact tables from
-#   preprocessed datasets, performs minimal and full schema tests, and triggers
-#   the downstream analytics validation DAG.
-# ===============================================================================
+"""
+========================================================================
+DAG: dag_data_analyze
+========================================================================
+
+Purpose:
+    Performs deterministic ETL for star schema:
+    1. Drop existing dimension and fact tables
+    2. Create and populate dimension tables
+    3. Create and populate fact table
+    4. Run minimal and full star schema tests
+    5. Trigger downstream analytics validation DAG
+
+Features:
+    - TaskGroup "star_schema_build" collapses schema-building tasks
+    - All helper functions in etl_utils accept *args, **kwargs
+    - Deterministic: rebuilds tables from fixed prep datasets
+========================================================================
+"""
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -21,7 +33,7 @@ from etl_utils import (
     populate_fact,
     min_test_star_schema,
     full_test_star_schema,
-    log_and_count  # <-- centralized helper in etl_utils
+    log_and_count
 )
 
 with DAG(
@@ -68,13 +80,13 @@ with DAG(
             python_callable=log_and_count(populate_fact, "Populate Fact Table", table_name="fact_accidents")
         )
 
-        # Explicit ordering inside TaskGroup
+        # Enforce strict ordering
         t_drop_dimensions >> t_drop_fact
         t_drop_fact >> t_create_dimensions >> t_populate_dimensions
         t_populate_dimensions >> t_create_fact >> t_populate_fact
 
     # =======================
-    # Tests
+    # Star Schema Tests
     # =======================
     t_min_test = PythonOperator(
         task_id="min_test_star_schema",
@@ -87,7 +99,7 @@ with DAG(
     )
 
     # =======================
-    # Trigger validation DAG
+    # Trigger downstream DAG
     # =======================
     trigger_validation = TriggerDagRunOperator(
         task_id="trigger_data_analytics_validation",
@@ -98,6 +110,6 @@ with DAG(
     )
 
     # =======================
-    # Full DAG ordering
+    # DAG Execution Order
     # =======================
     star_schema_group >> t_min_test >> t_full_test >> trigger_validation
