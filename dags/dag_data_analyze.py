@@ -1,8 +1,10 @@
-Purpose:
-    This DAG performs the full ETL and validation process for the star schema
-    used in the analytics pipeline. It builds dimension and fact tables from
-    preprocessed datasets, performs minimal and full schema tests, and triggers
-    the downstream analytics validation DAG.
+# =================== dag_data_analyze.py =======================================
+# Purpose:
+#   This DAG performs the full ETL and validation process for the star schema
+#   used in the analytics pipeline. It builds dimension and fact tables from
+#   preprocessed datasets, performs minimal and full schema tests, and triggers
+#   the downstream analytics validation DAG.
+# ===============================================================================
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
