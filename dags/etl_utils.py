@@ -1993,21 +1993,37 @@ def drop_fact(*args, **kwargs):
 def create_fact(*args, **kwargs):
     """
     Creates the fact_accidents table structure (without data).
+    Aligned with populate_fact foreign keys and measures.
     """
     conn = pg_connect()
     cur = conn.cursor()
+
+    # Drop first to avoid schema drift during refactors
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS fact_accidents (
-            date_id INT,
-            location_id INT,
-            employer_id INT,
-            hazard_id INT,
-            accident_type_id INT,
-            industry_id INT
+        DROP TABLE IF EXISTS fact_accidents CASCADE;
+    """)
+
+    cur.execute("""
+        CREATE TABLE fact_accidents (
+            fact_id SERIAL PRIMARY KEY,
+
+            -- Foreign keys to dimensions
+            date_id INT REFERENCES dim_date(date_id),
+            country_id INT REFERENCES dim_country(country_id),
+            industry_id INT REFERENCES dim_industry(industry_id),
+            accident_type_id INT REFERENCES dim_accident_type(accident_type_id),
+            hazard_id INT REFERENCES dim_hazard(hazard_id),
+            employer_id INT REFERENCES dim_employer(employer_id),
+
+            -- Measures
+            fatality TEXT
         )
     """)
+
     conn.commit()
     conn.close()
+
+    print("✅ fact_accidents table created successfully")
 
 
 # ------------------------------
