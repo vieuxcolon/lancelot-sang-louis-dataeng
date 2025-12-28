@@ -1756,37 +1756,41 @@ def create_dimensions(*args, **kwargs):
 def populate_dimensions(*args, **kwargs):
     """
     Populates all dimension tables from prep tables with proper primary keys.
-    Ensures dim_country has country_id and unique country_name.
+    Uses *_prep tables to ensure date, country, and fatality columns are available and normalized.
     """
-    import pandas as pd
     conn = pg_connect()
     cur = conn.cursor()
 
-    # Load prep tables
+    print("🔎 Loading prep tables for dimension population...")
+
+    # Load prep tables (cleaned and normalized with dates, country, fatality)
     df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
     df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
     df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
+
+    print(f"ARIA prep rows: {len(df_aria)}, Work prep rows: {len(df_work)}, Fatalities prep rows: {len(df_fatal)}")
 
     # ----------------------------
     # Helper: Insert unique values into dimension with surrogate PK
     # ----------------------------
     def insert_dim(df_list, col, table, id_col):
-        # Combine values from all prep tables
         frames = [df[[col]] for df in df_list if col in df.columns]
         if not frames:
+            print(f"⚠ No column '{col}' found in prep tables, skipping {table}")
             return
         df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
-
-        # Insert with serial PK, skipping duplicates
+        inserted = 0
         for v in df_dim[col]:
             cur.execute(
                 f"INSERT INTO {table} ({col}) VALUES (%s) ON CONFLICT ({col}) DO NOTHING",
                 (v,)
             )
+            inserted += 1
         conn.commit()
+        print(f"✔ Populated {table} with {inserted} unique values from column '{col}'")
 
     # ----------------------------
-    # Populate other dimensions
+    # Populate standard dimensions
     # ----------------------------
     insert_dim([df_aria, df_work, df_fatal], "industry_code", "dim_industry", "industry_id")
     insert_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type", "accident_type_id")
@@ -1797,17 +1801,19 @@ def populate_dimensions(*args, **kwargs):
     # Populate dim_date
     # ----------------------------
     all_dates = pd.concat([
-        df_aria.get("incident_date", pd.Series(dtype=str)),
-        df_work.get("accident_date", pd.Series(dtype=str)),
-        df_fatal.get("fatality_date", pd.Series(dtype=str))
+        df_aria.get("date", pd.Series(dtype=str)),
+        df_work.get("date", pd.Series(dtype=str)),
+        df_fatal.get("date", pd.Series(dtype=str))
     ]).dropna().drop_duplicates()
-
+    inserted_dates = 0
     for d in all_dates:
         cur.execute(
             "INSERT INTO dim_date (date) VALUES (%s) ON CONFLICT (date) DO NOTHING",
             (d,)
         )
+        inserted_dates += 1
     conn.commit()
+    print(f"✔ Populated dim_date with {inserted_dates} unique dates")
 
     # ----------------------------
     # Populate dim_country
@@ -1818,7 +1824,6 @@ def populate_dimensions(*args, **kwargs):
         df_fatal.get("country", pd.Series(dtype=str))
     ]).dropna().drop_duplicates()
 
-    # Predefined country codes (if available)
     predefined_codes = {
         "FRANCE": "FR",
         "USA": "US",
@@ -1833,6 +1838,7 @@ def populate_dimensions(*args, **kwargs):
         "UNKNOWN": "XX"
     }
 
+    inserted_countries = 0
     for c in all_countries:
         code = predefined_codes.get(c.upper(), "XX")
         cur.execute(
@@ -1843,8 +1849,13 @@ def populate_dimensions(*args, **kwargs):
             """,
             (c, code)
         )
+        inserted_countries += 1
     conn.commit()
+    print(f"✔ Populated dim_country with {inserted_countries} unique countries")
+
     conn.close()
+    print("✅ Dimension tables populated successfully from prep tables")
+
 
 # --------------------------
 # Drop fact table
