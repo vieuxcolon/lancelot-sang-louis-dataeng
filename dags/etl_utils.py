@@ -1696,17 +1696,24 @@ def drop_dimensions(*args, **kwargs):
 def create_dimensions(*args, **kwargs):
     """
     Creates all dimension tables (without data) for the star schema.
+    Column names are aligned with populate_dimensions inserts.
     """
     conn = pg_connect()
     cur = conn.cursor()
 
-    # Example: create dim_date
+    # ----------------------------
+    # dim_date
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_date (
             date_id SERIAL PRIMARY KEY,
             date TEXT UNIQUE
         )
     """)
+
+    # ----------------------------
+    # dim_country
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_country (
             country_id SERIAL PRIMARY KEY,
@@ -1714,6 +1721,10 @@ def create_dimensions(*args, **kwargs):
             country_code TEXT
         )
     """)
+
+    # ----------------------------
+    # dim_location (optional, populated later)
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_location (
             location_id SERIAL PRIMARY KEY,
@@ -1721,32 +1732,50 @@ def create_dimensions(*args, **kwargs):
             country_id INT REFERENCES dim_country(country_id)
         )
     """)
+
+    # ----------------------------
+    # dim_industry
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_industry (
             industry_id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE
+            industry_code TEXT UNIQUE
         )
     """)
+
+    # ----------------------------
+    # dim_accident_type
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_accident_type (
             accident_type_id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE
+            accident_type TEXT UNIQUE
         )
     """)
+
+    # ----------------------------
+    # dim_hazard
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_hazard (
             hazard_id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE
+            hazard_class TEXT UNIQUE
         )
     """)
+
+    # ----------------------------
+    # dim_employer
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_employer (
             employer_id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE
+            employer TEXT UNIQUE
         )
     """)
+
     conn.commit()
     conn.close()
+    print("✅ Dimension tables created successfully")
 
 
 # --------------------------
