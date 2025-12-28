@@ -1781,57 +1781,39 @@ def create_dimensions(*args, **kwargs):
 # --------------------------
 # Populate dimension tables
 # -------------------------
- 
+
 def populate_fact(*args, **kwargs):
     """
-    DEBUG VERSION
-    Populates the fact table with extreme diagnostics to identify
-    BIGINT overflow and silent pandas coercions.
+    Populates the fact_accidents table from prep tables and dimension tables.
+    Includes extensive DEBUG points for type, range, missing FK, and row-level checks.
     """
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("\n====================")
-    print("🔎 START populate_fact (DEBUG MODE)")
-    print("====================\n")
+    print("🔎 Loading prep tables...")
 
     # ----------------------------
     # Load prep tables
     # ----------------------------
-    print("📥 Loading prep tables...")
     df_aria = pd.read_sql("SELECT * FROM ariadb_prep", conn)
     df_work = pd.read_sql("SELECT * FROM workaccidents_prep", conn)
     df_fatal = pd.read_sql("SELECT * FROM fatalities_prep", conn)
-
-    print("ARIA rows:", len(df_aria))
-    print("WORK rows:", len(df_work))
-    print("FATAL rows:", len(df_fatal))
-
-    # Tag source (critical for debugging)
-    df_aria["__source"] = "aria"
-    df_work["__source"] = "work"
-    df_fatal["__source"] = "fatal"
-
-    # ----------------------------
-    # Combine prep tables
-    # ----------------------------
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-    print("\n📊 Combined fact rows:", len(df_fact))
 
-    print("\n🧪 Column dtypes BEFORE standardization:")
-    print(df_fact.dtypes)
+    print(f"📊 Total prep rows combined: {len(df_fact)}")
+    print(f"Columns: {df_fact.columns.tolist()}")
+    print("Sample prep rows (first 5):")
+    print(df_fact.head())
 
     # ----------------------------
     # Standardize join columns
     # ----------------------------
-    print("\n🧹 Standardizing join columns...")
     df_fact["date"] = df_fact["date"].astype(str).str.strip()
     df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
 
     # ----------------------------
     # Load dimension tables
     # ----------------------------
-    print("\n📥 Loading dimension tables...")
     dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
     dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
     dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
@@ -1839,13 +1821,21 @@ def populate_fact(*args, **kwargs):
     dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
     dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
 
-    dim_country["country_name"] = dim_country["country_name"].astype(str).str.upper()
+    print("📦 Dimension tables loaded")
+    for name, dim in zip(
+        ["industry", "accident_type", "hazard", "employer", "country", "date"],
+        [dim_industry, dim_accident_type, dim_hazard, dim_employer, dim_country, dim_date]
+    ):
+        print(f"  {name}: {len(dim)} rows, columns: {dim.columns.tolist()}")
+        print(dim.head())
+
+    dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
     # ----------------------------
     # Merge foreign keys
     # ----------------------------
-    print("\n🔗 Merging foreign keys...")
+    print("🔗 Merging foreign keys...")
     df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
     df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
     df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
@@ -1853,112 +1843,83 @@ def populate_fact(*args, **kwargs):
     df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_date, how="left", on="date")
 
-    fk_cols = [
-        "date_id",
-        "country_id",
-        "industry_id",
-        "accident_type_id",
-        "hazard_id",
-        "employer_id",
-    ]
-
-    print("\n📉 FK missing counts:")
-    print(df_fact[fk_cols].isna().sum())
+    print("🔗 Merge complete. Checking for missing FKs...")
+    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
+    missing_fk_counts = df_fact[fk_cols].isna().sum()
+    print("⚠ Missing foreign keys count per column:")
+    print(missing_fk_counts)
 
     # ----------------------------
-    # FK numeric sanity checks
+    # Check for duplicates or invalid merges
     # ----------------------------
-    print("\n🔍 FK numeric diagnostics:")
-    for col in fk_cols:
-        series = df_fact[col]
-        print(f"\n▶ {col}")
-        print("  dtype:", series.dtype)
-        print("  min :", series.dropna().min())
-        print("  max :", series.dropna().max())
+    print("🧩 Checking for duplicate rows after merge...")
+    duplicates = df_fact.duplicated(subset=fk_cols + ["fatality"])
+    print(f"Total duplicates: {duplicates.sum()}")
 
     # ----------------------------
-    # Fatality diagnostics (CRITICAL)
+    # Prepare fact table
     # ----------------------------
-    print("\n💀 Fatality diagnostics:")
-    if "fatality" in df_fact.columns:
-        print("fatality dtype:", df_fact["fatality"].dtype)
-        print("fatality unique sample:", df_fact["fatality"].dropna().unique()[:10])
-
-        # Detect insane values
-        numeric_fatality = pd.to_numeric(df_fact["fatality"], errors="coerce")
-        print("fatality numeric min:", numeric_fatality.min())
-        print("fatality numeric max:", numeric_fatality.max())
-
-        overflow_fatality = numeric_fatality[
-            numeric_fatality > 9_000_000_000_000_000_000
-        ]
-        print("fatality overflow candidates:", len(overflow_fatality))
+    df_fact_final = df_fact[[
+        "date_id", "country_id", "industry_id", "accident_type_id",
+        "hazard_id", "employer_id", "fatality"
+    ]].copy()
 
     # ----------------------------
-    # Prepare final fact frame
+    # DEBUG: show dtypes and unique counts
     # ----------------------------
-    df_fact_final = df_fact[
-        [
-            "date_id",
-            "country_id",
-            "industry_id",
-            "accident_type_id",
-            "hazard_id",
-            "employer_id",
-            "fatality",
-            "__source",
-        ]
-    ]
-
-    print("\n🧪 Fact final dtypes:")
-    print(df_fact_final.dtypes)
-
-    print("\n📈 Fact final numeric ranges:")
+    print("🧪 Fact final dtypes and unique counts BEFORE conversion:")
     for col in df_fact_final.columns:
-        if col != "__source":
-            s = pd.to_numeric(df_fact_final[col], errors="coerce")
-            print(f"{col}: min={s.min()}, max={s.max()}")
+        print(f"{col}: dtype={df_fact_final[col].dtype}, unique_count={df_fact_final[col].nunique()}")
 
     # ----------------------------
-    # Convert to Python-native types
+    # Convert to Python-native types for BIGINT safety
     # ----------------------------
-    print("\n🔄 Converting to Python-native types...")
-    df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
+    print("🔄 Converting FK columns to int and fatality to int (None for NaN)")
+    for col in fk_cols:
+        df_fact_final[col] = df_fact_final[col].apply(lambda x: int(x) if pd.notnull(x) else None)
+        print(f"{col}: min={df_fact_final[col].min()}, max={df_fact_final[col].max()}")
 
-    rows_to_insert = []
-    for idx, row in df_fact_final.iterrows():
-        tup = tuple(row.drop("__source"))
-        rows_to_insert.append(tup)
+    df_fact_final["fatality"] = df_fact_final["fatality"].apply(lambda x: int(x) if pd.notnull(x) else None)
+    print(f"fatality: min={df_fact_final['fatality'].min()}, max={df_fact_final['fatality'].max()}")
 
-        # Print first few rows verbosely
-        if idx < 5:
-            print(f"Row {idx} ({row['__source']}):", tup)
+    # ----------------------------
+    # DEBUG: show sample rows
+    # ----------------------------
+    print("💀 Sample rows after conversion (first 10):")
+    for i, row in enumerate(df_fact_final.head(10).itertuples(index=False)):
+        print(f"Row {i}: {row}")
 
-    print("\n🚀 Rows prepared for insert:", len(rows_to_insert))
+    # ----------------------------
+    # DEBUG: check for any remaining NaNs
+    # ----------------------------
+    print("🧐 Checking for any remaining NaNs in final table:")
+    print(df_fact_final.isna().sum())
+
+    # ----------------------------
+    # Prepare rows for bulk insert
+    # ----------------------------
+    rows_to_insert = [tuple(x) for x in df_fact_final.to_numpy()]
 
     # ----------------------------
     # Bulk insert
     # ----------------------------
-    print("\n📤 Attempting bulk insert...")
     sql = """
         INSERT INTO fact_accidents (
-            date_id, country_id, industry_id,
-            accident_type_id, hazard_id, employer_id, fatality
+            date_id, country_id, industry_id, accident_type_id,
+            hazard_id, employer_id, fatality
         ) VALUES %s
     """
-
-    psycopg2.extras.execute_values(
-        cur,
-        sql,
-        rows_to_insert,
-        page_size=500
-    )
+    print("📤 Attempting bulk insert...")
+    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
 
     conn.commit()
     conn.close()
 
-    print("\n✅ populate_fact completed successfully (DEBUG MODE)")
+    print(f"✅ Fact table populated successfully with {len(df_fact_final)} rows (bulk insert)")
 
+# --------------------------
+# Populate dimension tables
+# --------------------------
 
 def populate_dimensions(*args, **kwargs):
     """
