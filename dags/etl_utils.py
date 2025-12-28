@@ -4,29 +4,20 @@
 # specifically for downloading, cleaning, and loading datasets
 # etl_utils.py well formatted and self-documented.
 
-import unicodedata
 from psycopg2.extras import execute_values
 from psycopg2.extras import execute_batch
-import sys
-import logging
-import traceback
-import csv
+import sys, os, io, csv, unicodedata
+import logging, traceback, warnings, datetime
 from typing import List, Dict
-import os
-import io
 from io import StringIO, BytesIO
-import pandas as pd
-import psycopg2
-import requests
+import pandas as pd, numpy as np
+import psycopg2, requests
 from zipfile import ZipFile
 from datetime import datetime
-import warnings
-import logging
 from time import sleep
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from pymongo import MongoClient, ASCENDING
 from dotenv import load_dotenv
-from datetime import datetime
 
 
 logger = logging.getLogger(__name__)
