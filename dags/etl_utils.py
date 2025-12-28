@@ -1097,9 +1097,9 @@ def create_workaccidents_clean():
     csv_content = download_and_extract_zip()
 
     load_to_postgres(
-        csv_content=csv_content,
-        table_name=src_table,
-        sep=","
+    raw_csv_path,
+    table_name=src_table,
+    sep=","
     )
 
     print("✔ load_to_postgres() returned")
