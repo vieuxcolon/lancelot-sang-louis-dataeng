@@ -17,7 +17,7 @@ from datetime import datetime
 from time import sleep
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from pymongo import MongoClient, ASCENDING
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
 
 logger = logging.getLogger(__name__)
@@ -1586,8 +1586,10 @@ def create_dimensions(*args, **kwargs):
 
 def populate_dimensions(*args, **kwargs):
     """
-    Populates all dimension tables from prep tables.
+    Populates all dimension tables from prep tables with proper primary keys.
+    Ensures dim_country has country_id and unique country_name.
     """
+    import pandas as pd
     conn = pg_connect()
     cur = conn.cursor()
 
@@ -1596,39 +1598,82 @@ def populate_dimensions(*args, **kwargs):
     df_work = pd.read_sql('SELECT * FROM workaccidents_prep', conn)
     df_fatal = pd.read_sql('SELECT * FROM fatalities_prep', conn)
 
-    # Helper to insert values into dimension
-    def insert_unique(df_list, col, table):
+    # ----------------------------
+    # Helper: Insert unique values into dimension with surrogate PK
+    # ----------------------------
+    def insert_dim(df_list, col, table, id_col):
+        # Combine values from all prep tables
         frames = [df[[col]] for df in df_list if col in df.columns]
         if not frames:
             return
         df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
+
+        # Insert with serial PK, skipping duplicates
         for v in df_dim[col]:
-            cur.execute(f"INSERT INTO {table} (name) VALUES (%s) ON CONFLICT DO NOTHING", (v,))
+            cur.execute(
+                f"INSERT INTO {table} ({col}) VALUES (%s) ON CONFLICT ({col}) DO NOTHING",
+                (v,)
+            )
         conn.commit()
 
-    insert_unique([df_aria, df_work, df_fatal], "industry_code", "dim_industry")
-    insert_unique([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type")
-    insert_unique([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard")
-    insert_unique([df_aria, df_work, df_fatal], "employer", "dim_employer")
+    # ----------------------------
+    # Populate other dimensions
+    # ----------------------------
+    insert_dim([df_aria, df_work, df_fatal], "industry_code", "dim_industry", "industry_id")
+    insert_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type", "accident_type_id")
+    insert_dim([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard", "hazard_id")
+    insert_dim([df_aria, df_work, df_fatal], "employer", "dim_employer", "employer_id")
 
+    # ----------------------------
     # Populate dim_date
+    # ----------------------------
     all_dates = pd.concat([
-        df_aria.get("incident_date", pd.Series()),
-        df_work.get("accident_date", pd.Series()),
-        df_fatal.get("fatality_date", pd.Series())
+        df_aria.get("incident_date", pd.Series(dtype=str)),
+        df_work.get("accident_date", pd.Series(dtype=str)),
+        df_fatal.get("fatality_date", pd.Series(dtype=str))
     ]).dropna().drop_duplicates()
+
     for d in all_dates:
-        cur.execute("INSERT INTO dim_date (date) VALUES (%s) ON CONFLICT DO NOTHING", (d,))
+        cur.execute(
+            "INSERT INTO dim_date (date) VALUES (%s) ON CONFLICT (date) DO NOTHING",
+            (d,)
+        )
+    conn.commit()
 
+    # ----------------------------
     # Populate dim_country
+    # ----------------------------
     all_countries = pd.concat([
-        df_aria.get("country", pd.Series()),
-        df_work.get("country", pd.Series()),
-        df_fatal.get("country", pd.Series())
+        df_aria.get("country", pd.Series(dtype=str)),
+        df_work.get("country", pd.Series(dtype=str)),
+        df_fatal.get("country", pd.Series(dtype=str))
     ]).dropna().drop_duplicates()
-    for c in all_countries:
-        cur.execute("INSERT INTO dim_country (country_name) VALUES (%s) ON CONFLICT DO NOTHING", (c,))
 
+    # Predefined country codes (if available)
+    predefined_codes = {
+        "FRANCE": "FR",
+        "USA": "US",
+        "GERMANY": "DE",
+        "UK": "GB",
+        "PAYS-BAS": "NL",
+        "AUTRICHE": "AT",
+        "LIBAN": "LB",
+        "CHINE": "CN",
+        "HONGRIE": "HU",
+        "BELGIQUE": "BE",
+        "UNKNOWN": "XX"
+    }
+
+    for c in all_countries:
+        code = predefined_codes.get(c.upper(), "XX")
+        cur.execute(
+            """
+            INSERT INTO dim_country (country_name, country_code)
+            VALUES (%s, %s)
+            ON CONFLICT (country_name) DO NOTHING
+            """,
+            (c, code)
+        )
     conn.commit()
     conn.close()
 
