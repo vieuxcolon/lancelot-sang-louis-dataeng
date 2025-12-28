@@ -1029,6 +1029,9 @@ def create_workaccidents_clean():
     ETL function to load raw Workaccidents CSV into Postgres, then clean and create
     the workaccidents_clean table.
     """
+    import os
+    import pandas as pd
+
     # ----------------------------
     # Step 0: Define paths and tables
     # ----------------------------
@@ -1037,7 +1040,7 @@ def create_workaccidents_clean():
     dst_table = DB_CONFIG["workaccidents_clean_table"]
 
     # ----------------------------
-    # Step 1: Load raw CSV into Postgres
+    # Step 1a: Load raw CSV into Postgres
     # ----------------------------
     print(f"[INFO] Loading Workaccidents raw CSV into Postgres: {raw_csv_path}")
     load_to_postgres(raw_csv_path, table_name=src_table, sep=",")
