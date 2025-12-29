@@ -25,45 +25,27 @@ with DAG(
     tags=["clean"]
 ) as dag:
 
-    # ----------------------------
-    # Task: Clean ARIADB
-    # This function now loads raw CSV to Postgres and cleans it
-    # ----------------------------
-    t1_clean_ariadb = PythonOperator(
-        task_id="clean_ariadb",
+    t_clean_ariadb = PythonOperator(
+        task_id="t_clean_ariadb",
         python_callable=create_ariadb_clean
     )
 
-    # ----------------------------
-    # Task: Clean Workaccidents
-    # This function now loads raw CSV to Postgres and cleans it
-    # ----------------------------
-    t2_clean_workaccidents = PythonOperator(
-        task_id="clean_workaccidents",
+    t_clean_workaccidents = PythonOperator(
+        task_id="t_clean_workaccidents",
         python_callable=create_workaccidents_clean
     )
 
-    # ----------------------------
-    # Task: Clean Fatalities
-    # Already loads raw CSV internally, no changes needed
-    # ----------------------------
-    t3_clean_fatalities = PythonOperator(
-        task_id="clean_fatalities",
+    t_clean_fatalities = PythonOperator(
+        task_id="t_clean_fatalities",
         python_callable=create_fatalities_clean
     )
 
-    # ----------------------------
-    # Trigger next DAG (e.g., data preparation)
-    # ----------------------------
-    trigger_prep = TriggerDagRunOperator(
-        task_id="trigger_data_prep",
+    t_trigger_prep = TriggerDagRunOperator(
+        task_id="t_trigger_data_prep",
         trigger_dag_id="dag_data_bprep",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
     )
 
-    # ----------------------------
-    # Task chain
-    # ----------------------------
-    chain([t1_clean_ariadb, t2_clean_workaccidents, t3_clean_fatalities], trigger_prep)
+    chain([t_clean_ariadb, t_clean_workaccidents, t_clean_fatalities], t_trigger_prep)
