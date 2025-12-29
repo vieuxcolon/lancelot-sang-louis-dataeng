@@ -179,11 +179,26 @@ def read_csv_safe(path):
     )
 
 def clean_column_names(df):
-    df.columns = [
-        str(c).strip().lower().replace(" ", "_") if c is not None else f"col_{i}"
-        for i, c in enumerate(df.columns)
-    ]
+    def clean(c):
+        # remove accents
+        c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
+        # lowercase, remove/replace special chars
+        c = (
+            c.strip()
+            .lower()
+            .replace(" ", "_")
+            .replace("/", "_")
+            .replace("(", "")
+            .replace(")", "")
+            .replace("'", "")
+            .replace("#", "")
+            .rstrip("_")
+        )
+        return c
+
+    df.columns = [clean(c) for c in df.columns]
     return df
+
 
 # =====================================================================================
 # DOWNLOAD UTILITIES HELPERS
