@@ -1,4 +1,4 @@
-# ==================== etl_utils.py =================================
+# ==================== etl_utils.py ================================================
 # The utilities contained therein are used by dag_etl_master.py
 # This module provides utility functions for ETL processes
 # specifically for downloading, cleaning, and loading datasets
@@ -17,8 +17,8 @@ from datetime import datetime
 from time import sleep
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from pymongo import MongoClient, ASCENDING
-#from dotenv import load_dotenv
 
+# =====================================================================================
 
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
@@ -51,7 +51,7 @@ DB_CONFIG = {
     "user": os.getenv("DATA_POSTGRES_USER"),
     "password": os.getenv("DATA_POSTGRES_PASSWORD"),
 
-    # Tables (unchanged — no regression)
+    # Tables
     "ariadb_table": "ariadb",
     "ariadb_clean_table": "ariadb_clean",
     "ariadb_prep_table": "ariadb_prep",
@@ -138,13 +138,200 @@ MONGO_PASSWORD = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
 MONGO_DB = os.getenv("MONGO_DB")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION")
 
-# DATA_DIR is shared across containers via Docker volume
-DATA_DIR = os.getenv("DATA_DIR", "/opt/airflow/data")  # Default if not explicitly set
+# =====================================================================================
+# CONNECTION HELPERS
+# =====================================================================================
 
-# ============================================================================
-# MongoDB connection helper
+def pg_connect():
+    return psycopg2.connect(
+        host=DB_CONFIG["host"],
+        port=DB_CONFIG["port"],
+        dbname=DB_CONFIG["dbname"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"],
+    )
+
+def get_mongo_client():
+    from pymongo import MongoClient
+    return MongoClient(os.getenv("MONGO_URI", "mongodb://mongo:27017"))
+
+# =====================================================================================
+# CSV PROCESSING HELPERS
+# =====================================================================================
+
+def read_csv_robust(source, sep=",", skiprows=0, dtype=str):
+    return pd.read_csv(
+        source,
+        sep=sep,
+        skiprows=skiprows,
+        dtype=dtype,
+        engine="python",
+        encoding_errors="ignore",
+    )
+
+def read_csv_safe(path):
+    return pd.read_csv(
+        path,
+        sep=",",
+        quotechar='"',
+        encoding="latin1",
+        engine="python",
+    )
+
+def clean_column_names(df):
+    df.columns = [
+        str(c).strip().lower().replace(" ", "_") if c is not None else f"col_{i}"
+        for i, c in enumerate(df.columns)
+    ]
+    return df
+
+# =====================================================================================
+# DOWNLOAD UTILITIES HELPERS
+# =====================================================================================
+
+def download_csv(URL, filename):
+    filepath = os.path.join(DATA_DIR, filename)
+    print(f"📥 Trying download: {URL}")
+    try:
+        r = requests.get(URL, timeout=60)
+        r.raise_for_status()
+        with open(filepath, "wb") as f:
+            f.write(r.content)
+        print(f"Download OK ({len(r.content)} bytes)")
+        return r.text
+    except Exception as e:
+        print(f"Download error: {e}")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        raise
+
+
+# =====================================================================================
+# GENERIC POSTGRES LOADERS AND TABLE PROFILER HELPERS
+# =====================================================================================
+
+def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
+    os.makedirs(output_dir, exist_ok=True)
+
+    tables = [
+        db_config["ariadb_clean_table"],
+        db_config["fatalities_clean_table"],
+        "workaccidents_clean",
+    ]
+
+    conn = pg_connect()
+
+    profile_records = []
+
+    for table in tables:
+        df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
+
+        for col in df.columns:
+            profile_records.append(
+                {
+                    "table": table,
+                    "column": col,
+                    "dtype": str(df[col].dtype),
+                    "non_null": df[col].notna().sum(),
+                    "missing": df[col].isna().sum(),
+                    "unique": df[col].nunique(dropna=True),
+                    "top_5": df[col].value_counts(dropna=False).head(5).to_dict(),
+                }
+            )
+
+    df_prof = pd.DataFrame(profile_records)
+    profile_path = os.path.join(output_dir, "db_profiling_report.csv")
+    df_prof.to_csv(profile_path, index=False)
+
+    print(f"✔ Profile saved to {profile_path}")
+    conn.close()
+
+def log_and_count(func, step_name, table_name=None):
+    """
+    Wrapper for Airflow PythonOperator:
+    - Logs start and end of step
+    - Optionally logs row count for a given table
+    """
+    def wrapped(*args, **kwargs):
+        logging.info(f"▶ START: {step_name}")
+        result = func(*args, **kwargs)
+
+        # If table_name is provided, count rows in Postgres
+        if table_name:
+            conn = pg_connect()
+            df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{table_name}"', conn)
+            logging.info(f"✔ {step_name}: {df['cnt'][0]} rows in {table_name}")
+            conn.close()
+        else:
+            logging.info(f"✔ END: {step_name}")
+        return result
+    return wrapped
+
+def load_to_postgres(csv_input, table_name, skiprows=0, sep=","):
+    conn = pg_connect()
+    cur = conn.cursor()
+
+    if isinstance(csv_input, str) and os.path.exists(csv_input):
+        df = read_csv_robust(csv_input, sep=sep, skiprows=skiprows)
+    else:
+        df = read_csv_robust(StringIO(csv_input), sep=sep, skiprows=skiprows)
+
+    df = clean_column_names(df)
+
+    cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+    cur.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
+
+    insert_sql = f"""
+        INSERT INTO "{table_name}"
+        ({", ".join([f'"{c}"' for c in df.columns])})
+        VALUES ({", ".join(["%s"] * len(df.columns))})
+    """
+
+    for _, row in df.iterrows():
+        cur.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+
+    conn.commit()
+    conn.close()
+    print(f"✔ Loaded table {table_name} ({len(df)} rows)")
+
+# =====================================================================================
+# NORMALIZATION HELPERS
+# =====================================================================================
+
+def normalize_country(df, column_name="country"):
+    if column_name not in df.columns:
+        df[column_name] = "UNKNOWN"
+        return df
+
+    def norm(v):
+        if pd.isna(v):
+            return "UNKNOWN"
+        s = str(v).strip().upper()
+        s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
+        if s in {"USA", "US", "UNITED STATES", "ETATS-UNIS", "ETATS UNIS"}:
+            return "USA"
+        if s in {"UK", "UNITED KINGDOM", "ROYAUME-UNI"}:
+            return "UK"
+        return s
+
+    df[column_name] = df[column_name].apply(norm)
+    return df
+
+# =======================================================================================
+# DAG_DATA_DOWNLOAD FUNCTIONS: 1. download_ariadb_via_mongo, 2. download_all_fatalities, 
+# 3. download_and_extract_zip (download workaccidents)
+# ========================================================================================
+
+# =======================================================================================
+# DAG_DATA_DOWNLOAD: # 1. download_ariadb_via_mongo
+# ARIADB LOADING VIA MONGODB FUNCTION AND HELPERS
 # Centralized, authenticated MongoDB client creation with connectivity check
-# ============================================================================
+# Reads an entire MongoDB collection and writes it to a CSV file and load it to postgres
+# Source CSV (URL) → MongoDB (atomic load) → [CSV on disk, Postgres table]
+# ========================================================================================
+
 def get_mongo_client():
     uri = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/"
     print(f"[DEBUG] Connecting to MongoDB with URI: {uri}")
@@ -158,42 +345,8 @@ def get_mongo_client():
         traceback.print_exc()
         sys.exit(1)
 
-# ============================================================================
-# MongoDB → CSV export utility
-# Reads an entire MongoDB collection and writes it to a CSV file
-# ============================================================================
-
-def export_mongo_to_csv(db_name: str, collection_name: str, output_file: str):
-    client = get_mongo_client()
-    db = client[db_name]
-    try:
-        print(
-            f"[DEBUG] Exporting MongoDB collection "
-            f"'{db_name}.{collection_name}' to CSV '{output_file}'"
-        )
-        cursor = db[collection_name].find()
-        df = pd.DataFrame(list(cursor))
-
-        # Remove MongoDB internal ID field
-        if "_id" in df.columns:
-            df.drop(columns=["_id"], inplace=True)
-
-        df.to_csv(output_file, index=False)
-        print(f"✔ Collection exported successfully to {output_file}, rows: {len(df)}")
-    except Exception:
-        print("[ERROR] Failed to export MongoDB collection to CSV")
-        traceback.print_exc()
-    finally:
-        client.close()
-        print("✔ MongoDB connection closed after export")
-
-# ============================================================================
-# Main ETL function
-# Source CSV (URL) → MongoDB (atomic load) → CSV on disk
-# ============================================================================
-
 # ---------------------------------------------------------------------
-# Step 1: Download CSV from source
+# Download CSV from source
 # ---------------------------------------------------------------------
 def download_csv_from_web(url: str) -> List[Dict]:
     response = requests.get(url, timeout=60)
@@ -208,7 +361,7 @@ def download_csv_from_web(url: str) -> List[Dict]:
     return rows
 
 # ---------------------------------------------------------------------
-# Step 2: Load CSV rows into MongoDB
+# Load CSV rows into MongoDB
 # ---------------------------------------------------------------------
 def load_rows_into_mongo(rows: List[Dict]):
     client = get_mongo_client()
@@ -221,7 +374,7 @@ def load_rows_into_mongo(rows: List[Dict]):
     print(f"Inserted {len(rows)} rows into MongoDB ({MONGO_DB}.{MONGO_COLLECTION})")
 
 # ---------------------------------------------------------------------
-# Step 3: Export MongoDB collection to CSV on disk
+# Export MongoDB collection to CSV on disk
 # ---------------------------------------------------------------------
 def export_mongo_to_csv(filename: str):
     client = get_mongo_client()
@@ -246,48 +399,145 @@ def export_mongo_to_csv(filename: str):
 
     print(f"ARIADB CSV written to {output_path}")
 
-# ---------------------------------------------------------------------
-# Public API — REPLACES download_csv
-# ---------------------------------------------------------------------
 
-
-def create_database_and_set_config(db_name: str):
+def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
     """
-    Create the PostgreSQL database if it doesn't exist and update DB_CONFIG['database']
-    so all ETL scripts point to it automatically.
-
-    Args:
-        db_name (str): Name of the database to create and use.
+    End-to-end flow:
+        Source CSV (URL)
+            → MongoDB temp collection (batch inserts, safe column keys)
+            → Atomic rename to main collection
+            → Export back to CSV ($DATA_DIR/ariadb.csv) and load to postgres 
+    The output CSV filename is fixed by contract. Batch inserts prevent memory issues.
     """
-    # Connect to default DB first
-    conn = psycopg2.connect(
-        host=DB_CONFIG["host"],
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"],
-        database="postgres",  # default DB for initial connection
-        port=DB_CONFIG.get("port", 5432)
-    )
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-    cur = conn.cursor()
+    print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
 
-    # Check if database exists
-    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
-    if not cur.fetchone():
-        cur.execute(f"CREATE DATABASE {db_name};")
-        print(f"✔ Database '{db_name}' created.")
-    else:
-        print(f"✔ Database '{db_name}' already exists.")
+    # ------------------------------------------------------------------------
+    # Step 1: Download CSV from source URL
+    # ------------------------------------------------------------------------
+    try:
+        print("[DEBUG] Attempting UTF-8 CSV read")
+        df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
+        print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
+    except UnicodeDecodeError:
+        print("[WARNING] UTF-8 failed, trying latin1")
+        try:
+            df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
+            print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
+        except Exception:
+            print("[ERROR] CSV read failed (latin1)")
+            traceback.print_exc()
+            sys.exit(1)
+    except Exception:
+        print("[ERROR] CSV download failed")
+        traceback.print_exc()
+        sys.exit(1)
 
-    # Grant privileges to user
-    cur.execute(f"GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {DB_CONFIG['user']};")
-    print(f"✔ Granted all privileges on '{db_name}' to '{DB_CONFIG['user']}'.")
+    # ------------------------------------------------------------------------
+    # Step 2: Add ETL metadata
+    # ------------------------------------------------------------------------
+    try:
+        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        df["_etl_run_id"] = run_id
+        df["_etl_loaded_at"] = datetime.utcnow()
+        print(f"[DEBUG] ETL metadata added (_etl_run_id={run_id})")
+    except Exception:
+        print("[ERROR] Failed to add ETL metadata")
+        traceback.print_exc()
+        sys.exit(1)
 
-    cur.close()
-    conn.close()
+    # ------------------------------------------------------------------------
+    # Step 3: Load into MongoDB (temp → atomic rename) with batch inserts
+    # ------------------------------------------------------------------------
+    client = get_mongo_client()
+    db = client[MONGO_DB]
+    tmp_coll_name = f"{MONGO_COLLECTION}_tmp"
+    tmp_coll = db[tmp_coll_name]
 
-    # Update DB_CONFIG to point ETL scripts to the new database
-    DB_CONFIG["database"] = db_name
-    print(f"✔ DB_CONFIG['database'] updated to '{db_name}' for all ETL scripts.")
+    try:
+        # Drop tmp collection if exists
+        if tmp_coll_name in db.list_collection_names():
+            db.drop_collection(tmp_coll_name)
+
+        # Clean column names: remove None, strip, fallback to col_i
+        df.columns = [
+            str(c).strip() if c is not None and str(c).strip() != "" else f"col_{i}"
+            for i, c in enumerate(df.columns)
+        ]
+
+        # Batch insert to avoid memory issues
+        records = df.to_dict(orient="records")
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            tmp_coll.insert_many(batch)
+
+        # Verify row count
+        if tmp_coll.count_documents({}) != len(df):
+            raise RuntimeError("Row count mismatch after Mongo insert")
+
+        # Atomic rename
+        if MONGO_COLLECTION in db.list_collection_names():
+            db.drop_collection(MONGO_COLLECTION)
+        tmp_coll.rename(MONGO_COLLECTION)
+        print(f"[DEBUG] Mongo atomic rename: {tmp_coll_name} → {MONGO_COLLECTION}")
+
+    except Exception:
+        print("[ERROR] MongoDB load/rename failed")
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        client.close()
+        print("✔ MongoDB connection closed")
+
+    # ------------------------------------------------------------------------
+    # Step 4: Export MongoDB → CSV (fixed path)
+    # ------------------------------------------------------------------------
+    try:
+        print(f"[INFO] Exporting MongoDB collection '{MONGO_DB}.{MONGO_COLLECTION}' → 'ariadb.csv'")
+        export_mongo_to_csv("ariadb.csv")
+        print(f"[OK] ariadb.csv written to {DATA_DIR}")
+    except Exception:
+        print("[ERROR] MongoDB export to CSV failed")
+        traceback.print_exc()
+        sys.exit(1)
+
+    #- ------------------------------------------------------------------------
+    # Step 5: Load MongoDB collection into Postgres table 'ariadb'
+    # ------------------------------------------------------------------------
+    try:
+        
+        conn = pg_connect()
+        cur = conn.cursor()
+        dst_table = "ariadb"
+
+        # Drop table if exists
+        cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
+        # Create table with all columns as TEXT
+        col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
+        cur.execute(f'CREATE TABLE "{dst_table}" ({col_defs})')
+
+        # Insert rows in batches
+        insert_sql = f"""
+            INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
+            VALUES ({", ".join(["%s"] * len(df.columns))})
+        """
+        for i in range(0, len(df), batch_size):
+            batch = df.iloc[i:i+batch_size]
+            cur.executemany(insert_sql, batch.where(pd.notnull(batch), None).values.tolist())
+
+        conn.commit()
+        conn.close()
+        print(f"✔ MongoDB collection loaded into Postgres table '{dst_table}' ({len(df)} rows)")
+
+    except Exception:
+        print("[ERROR] Failed to load ARIADB into Postgres")
+        traceback.print_exc()
+        sys.exit(1)
+
+# ========================================================================================================
+# DAG_DATA_DOWNLOAD: # 2. download_all_fatalities (fatalities dataset is multiple CSVs)
+# Download ALL fatalities CSV files 1-9 from source website, fallback to local files if in case of errors
+# =========================================================================================================
 
 def download_all_fatalities():
     """
@@ -306,7 +556,7 @@ def download_all_fatalities():
         filename = f"fatalities_{i}.csv"
         local_path = os.path.join(DATA_DIR, filename)
 
-        logger.info(f"📥 Downloading fatalities file {i}: {url}")
+        logger.info(f"Downloading fatalities file {i}: {url}")
 
         try:
             r = requests.get(url, headers=headers, timeout=30)
@@ -315,190 +565,110 @@ def download_all_fatalities():
             with open(local_path, "wb") as f:
                 f.write(r.content)
 
-            logger.info(f"✅ Saved {filename} ({len(r.content)} bytes)")
+            logger.info(f" Saved {filename} ({len(r.content)} bytes)")
 
         except Exception as e:
             logger.warning(
-                f"⚠️ Failed to download {url}: {e}. Trying local fallback..."
+                f" Failed to download {url}: {e}. Trying local fallback..."
             )
 
             if not os.path.exists(local_path):
-                raise FileNotFoundError(f"❌ No local fallback available for {filename}")
+                raise FileNotFoundError(f" No local fallback available for {filename}")
             else:
-                logger.info(f"📄 Using existing local copy: {local_path}")
+                logger.info(f" Using existing local copy: {local_path}")
 
         saved_files.append(local_path)
         sleep(1)  # politeness delay toward OSHA servers
 
-    logger.info("✔ All fatalities files obtained (downloaded or fallback).")
+    logger.info(" All fatalities files obtained (downloaded or fallback).")
     return saved_files
 
+def finalize(df):
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date"].notna()]
+    df["no_of_fatalities"] = 1
+    df["country"] = "USA"
+    return df[["date", "no_of_fatalities", "country"]]
 
-# =====================================================================================
-# CSV READING
-# =====================================================================================
+def clean_fatalities_1_2(file, out):
+    df = read_csv_safe(file).iloc[1:]
+    df.columns = ["date", "employer", "victim", "hazard", "fatality", "inspection"]
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
 
-def read_csv_robust(csv_input, sep=",", skiprows=0, dtype=str):
-    """
-    Robust CSV reader with fallback encodings.
+def clean_fatalities_3(file, out):
+    df = read_csv_safe(file)
+    df.columns = ["date","company","victim","description","fatality","inspection"] + list(df.columns[6:])
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
 
-    Parameters
-    ----------
-    csv_input : str
-        Either a filesystem path to a CSV file, or a string containing CSV content.
-    sep : str
-        CSV separator (default ",").
-    skiprows : int
-        Number of rows to skip at the top of the file.
-    dtype : type or dict
-        Column data types.
+def clean_fatalities_4(file, out):
+    df = read_csv_safe(file)
+    df.columns = ["date","company","description","fatality","inspection"] + list(df.columns[5:])
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
 
-    Returns
-    -------
-    pd.DataFrame
-        Loaded DataFrame.
-    """
-    encodings = ["utf-8", "latin1"]
+def clean_fatalities_5(file, out):
+    df = read_csv_safe(file)
+    df.columns = ["date","company","description","fatality"]
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
 
-    # ----------------------------
-    # Case 1: CSV file path
-    # ----------------------------
-    if isinstance(csv_input, str) and os.path.exists(csv_input):
-        for enc in encodings:
-            try:
-                print(f"[INFO] Attempting to read CSV file '{csv_input}' using {enc} encoding")
-                df = pd.read_csv(
-                    csv_input,
-                    sep=sep,
-                    skiprows=skiprows,
-                    dtype=dtype,
-                    encoding=enc,
-                    low_memory=False
-                )
-                print(f"✔ CSV read from file path using {enc} encoding")
-                return df
-            except Exception as e:
-                print(f"⚠ Failed with {enc} encoding: {e}")
-        raise ValueError(f"Failed to read CSV file '{csv_input}' with UTF-8 or Latin-1 encoding")
+def clean_fatalities_6_to_9(file, out):
+    df = read_csv_safe(file).iloc[:, :4]
+    df.columns = ["fiscal_year","report_date","date","fatality"]
+    df = df[df["fatality"].notna()]
+    df = finalize(df)
+    df.to_csv(out, index=False)
+    return len(df)
 
-    # ----------------------------
-    # Case 2: In-memory CSV content
-    # ----------------------------
-    if isinstance(csv_input, str):
-        for enc in encodings:
-            try:
-                print(f"[INFO] Attempting to read CSV content using {enc} encoding")
-                df = pd.read_csv(
-                    StringIO(csv_input),
-                    sep=sep,
-                    skiprows=skiprows,
-                    dtype=dtype,
-                    encoding=enc,
-                    low_memory=False
-                )
-                print(f"✔ CSV read from content using {enc} encoding")
-                return df
-            except Exception as e:
-                print(f"⚠ Failed with {enc} encoding: {e}")
-        raise ValueError("Failed to read CSV content with UTF-8 or Latin-1 encoding")
+# ========================================================================================================
+# DAG_DATA_DOWNLOAD: # 3. download_and_extract_zip (used for workaccidents dataset)
+# Download the zip file and unzip it to the landing zone 
+# =========================================================================================================
 
-    # ----------------------------
-    # Invalid input type
-    # ----------------------------
-    raise ValueError("csv_input must be a file path or CSV content string")
+def download_and_extract_zip(zip_url=None):
+    url = zip_url or ZIP_URL
+    filename = os.path.basename(url)
+    filepath = os.path.join(DATA_DIR, filename)
+    try:
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        zip_bytes = BytesIO(r.content)
+    except Exception:
+        if not os.path.exists(filepath):
+            raise
+        zip_bytes = open(filepath, "rb")
+    with ZipFile(zip_bytes) as zf:
+        csv_files = [f for f in zf.namelist() if f.lower().endswith(".csv")]
+        with zf.open(csv_files[0]) as f:
+            return f.read().decode("utf-8", errors="ignore")
 
 
-# =====================================================================================
-# COLUMN CLEANING
-# =====================================================================================
+# ==========================================================================================================
+# DAG_DATA_CLEAN FUNCTIONS: 1. create_ariadb_clean, 2. create_workaccidents_clean, 3.create_fatalities_clean
+# Data cleaning functions for ARIADB, Workaccidents, and Fatalities datasets
+# ==========================================================================================================
 
-def normalize_country(df: pd.DataFrame, column_name: str = "country") -> pd.DataFrame:
-    """
-    Vectorized normalization of country names in a DataFrame column.
-    - Converts None/NaN to 'UNKNOWN'
-    - Strips whitespace
-    - Uppercases
-    - Normalizes accents
-    - Maps common synonyms to canonical names
-    """
-    if column_name not in df.columns:
-        return df
-
-    # Fill missing values
-    df[column_name] = df[column_name].fillna("UNKNOWN").astype(str)
-
-    # Strip, uppercase
-    df[column_name] = df[column_name].str.strip().str.upper()
-
-    # Normalize accents
-    df[column_name] = (
-        df[column_name]
-        .str.normalize("NFKD")  # decomposes accents
-        .str.encode("ascii", errors="ignore")  # removes accents
-        .str.decode("utf-8")
-    )
-
-    # Mapping table for common country synonyms
-    country_map = {
-        "USA": "USA",
-        "US": "USA",
-        "UNITED STATES": "USA",
-        "UNITED STATES OF AMERICA": "USA",
-        "ETATS-UNIS": "USA",
-        "ETATS UNIS": "USA",
-        "ETATSUNIS": "USA",
-        "UK": "UK",
-        "UNITED KINGDOM": "UK",
-        "ROYAUME-UNI": "UK",
-        "FRANCE": "FRANCE",
-        "GERMANY": "GERMANY",
-        "ALLEMAGNE": "GERMANY",
-        "CANADA": "CANADA",
-    }
-
-    # Replace using vectorized mapping
-    df[column_name] = df[column_name].replace(country_map)
-
-    # Any leftover empty strings or NaN → UNKNOWN
-    df[column_name] = df[column_name].replace({"": "UNKNOWN", None: "UNKNOWN"})
-
-    return df
-
-
-# -------------------------------------------------------------------------
-# Helper: normalize column names
-# -------------------------------------------------------------------------
-def clean_column_names(df):
-    def clean(c):
-        # remove accents
-        c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii")
-        # lowercase, remove/replace special chars
-        c = (
-            c.strip()
-            .lower()
-            .replace(" ", "_")
-            .replace("/", "_")
-            .replace("(", "")
-            .replace(")", "")
-            .replace("'", "")
-            .replace("#", "")
-            .rstrip("_")
-        )
-        return c
-
-    df.columns = [clean(c) for c in df.columns]
-    return df
-
-# -------------------------------------------------------------------------
-# Main ETL function
-# -------------------------------------------------------------------------
-
+# ==========================================================================================================
+# DAG_DATA_CLEAN FUNCTIONS: 1. create_ariadb_clean  
+# Data cleaning function for the ariadb dataset
+# ==========================================================================================================
+    
 def create_ariadb_clean():
     """
-    1️⃣ Load raw ARIADB CSV from disk
-    2️⃣ Normalize column names (Mongo-safe)
-    3️⃣ Apply column mapping, date normalization, deduplication, country normalization
-    4️⃣ Create Postgres clean table ariadb_clean
+    1 Load raw ARIADB CSV from disk
+    2 Normalize column names (Mongo-safe)
+    3 Apply column mapping, date normalization, deduplication, country normalization
+    4 Create Postgres clean table ariadb_clean
     """
     src_csv = os.path.join(DATA_DIR, "ariadb.csv")
     dst_table = DB_CONFIG["ariadb_clean_table"]
@@ -621,504 +791,12 @@ def create_ariadb_clean():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created {dst_table} ({len(df)} rows)")
-
-
-# =====================================================================================
-# DOWNLOAD CSV
-# =====================================================================================
-
-
-def download_csv(URL, filename):
-    filepath = os.path.join(DATA_DIR, filename)
-    print(f"📥 Trying download: {URL}")
-
-    try:
-        r = requests.get(URL, timeout=60)
-        r.raise_for_status()
-
-        with open(filepath, "wb") as f:
-            f.write(r.content)
-
-        print(f"✅ Download OK ({len(r.content)} bytes)")
-        print(f"💾 Saved to {filepath}")
-
-        return r.text
-
-    except Exception as e:
-        print(f"⚠️ Download error: {e}, checking local copy.")
-
-        if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
-
-        raise FileNotFoundError(f"❌ Neither URL nor local file available: {URL}")
-
-
-# =====================================================================================
-# ZIP DOWNLOAD
-# =====================================================================================
-
-# ==================== etl_utils.py ====================
-
-
-def download_and_extract_zip(zip_url=None):
-    url = zip_url or ZIP_URL
-    filename = os.path.basename(url)
-    filepath = os.path.join(DATA_DIR, filename)
-
-    try:
-        r = requests.get(url, timeout=60)
-        r.raise_for_status()
-        with open(filepath, "wb") as f:
-            f.write(r.content)
-        zip_bytes = BytesIO(r.content)
-        print(f"✅ ZIP download OK ({len(r.content)} bytes)")
-    except Exception:
-        if not os.path.exists(filepath):
-            raise FileNotFoundError("❌ ZIP missing online and local")
-        zip_bytes = open(filepath, "rb")
-
-    with ZipFile(zip_bytes) as zf:
-        csv_files = [f for f in zf.namelist() if f.lower().endswith(".csv")]
-        target = csv_files[0]
-        with zf.open(target) as f:
-            return f.read().decode("utf-8", errors="ignore")
-
-
-# =====================================================================================
-# LOAD TO POSTGRES (FULL REPLACE)
-# =====================================================================================
-
-def load_to_postgres(csv_input, table_name, skiprows=0, sep=";"):
-    """
-    Load CSV data into Postgres.
-
-    csv_input can be:
-    - a filesystem path to a CSV file
-    - a string containing CSV content
-    """
-
-    conn = pg_connect()
-    cursor = conn.cursor()
-
-    # ----------------------------
-    # Detect input type
-    # ----------------------------
-    if isinstance(csv_input, str) and os.path.exists(csv_input):
-        # Case 1: csv_input is a file path
-        print(f"[INFO] Reading CSV from file path: {csv_input}")
-        df = read_csv_robust(csv_input, sep=sep, skiprows=skiprows, dtype=str)
-
-    elif isinstance(csv_input, str):
-        # Case 2: csv_input is CSV content
-        print("[INFO] Reading CSV from in-memory content")
-        df = read_csv_robust(StringIO(csv_input), sep=sep, skiprows=skiprows, dtype=str)
-
-    else:
-        conn.close()
-        raise ValueError(
-            "csv_input must be a file path or CSV content string"
-        )
-
-    # ----------------------------
-    # Guardrail: empty dataframe
-    # ----------------------------
-    if df.empty:
-        print(f"⚠ WARNING: CSV loaded for '{table_name}' but dataframe is EMPTY")
-        print(f"    Columns detected: {list(df.columns)}")
-
-    # Normalize column names
-    df = clean_column_names(df)
-
-    # ----------------------------
-    # Recreate table
-    # ----------------------------
-    cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-    cursor.execute(f'CREATE TABLE "{table_name}" ({col_defs});')
-
-    # ----------------------------
-    # Insert rows
-    # ----------------------------
-    insert_sql = f"""
-        INSERT INTO "{table_name}"
-        ({", ".join([f'"{c}"' for c in df.columns])})
-        VALUES ({", ".join(["%s"] * len(df.columns))})
-    """
-
-    inserted = 0
-    for _, row in df.iterrows():
-        cursor.execute(
-            insert_sql,
-            [None if pd.isna(v) else v for v in row.values]
-        )
-        inserted += 1
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    print(f"✔ Loaded table: {table_name} ({inserted} rows)")
-
-
-# ============================================================
-# LOAD FATALITIES HELPERS
-# ============================================================
-
-
-def load_fatalities_first(csv_text, sep=","):
-    """Drop & recreate fatalities table before loading fatalities_1."""
-    return load_to_postgres(
-        csv_content=csv_text,
-        table_name=DB_CONFIG["fatalities_table"],
-        sep=sep,
-        skiprows=0,  # fatalities have no metadata rows
-        drop_if_exists=True,  # FORCE DROP
-    )
-
-
-def append_fatalities_next(csv_text, sep=","):
-    """Append fatalities_2, fatalities_3, etc."""
-    return append_to_fatalities(csv_text, sep=sep)
-
-
-# ============================================================
-# Safe DROP fatalities table
-# ============================================================
-
-
-def drop_fatalities_table():
-    conn = pg_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute("DROP TABLE IF EXISTS fatalities;")
-        conn.commit()
-        logger.info("🗑️ Dropped table fatalities (if existed).")
-    except Exception as e:
-        logger.error(f"⚠️ Error dropping fatalities table: {e}")
-        conn.rollback()
-    finally:
-        cur.close()
-        conn.close()
-
-
-"""
-def drop_fatalities_table():
-    
-    Safely drop the fatalities table if it exists.
-    Never throws an error if the table is missing.
-    
-    conn = pg_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute(f'DROP TABLE IF EXISTS "{DB_CONFIG["fatalities_table"]}"')
-        conn.commit()
-        print("✔ fatalities table dropped (if existed)")
-    finally:
-        conn.close()
-"""
-
-# ============================================================
-# Load all fatalities sequentially:
-#   - drop table
-#   - load fatalities_1 as CREATE
-#   - append fatalities_2..9 as APPEND
-# ============================================================
-
-
-def load_all_fatalities():
-    """
-    Master function:
-    - downloads all CSVs (with fallback)
-    - drops fatalities table
-    - loads fatalities_1 as new table
-    - appends fatalities_2..9
-    """
-    files = download_all_fatalities()
-    drop_fatalities_table()
-
-    for i, path in enumerate(files, start=1):
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            csv_text = f.read()
-
-        if i == 1:
-            logger.info("📌 Creating fatalities table using part 1")
-            append_to_fatalities(csv_text, sep=",", create_if_missing=True)
-        else:
-            logger.info(f"📌 Appending fatalities part {i}")
-            append_to_fatalities(csv_text, sep=",", create_if_missing=False)
-
-    logger.info("✔ Fatalities table fully rebuilt from 9 CSVs.")
-
-
-def append_to_fatalities(csv_content, table_name=None, sep=","):
-    table = table_name or DB_CONFIG["fatalities_table"]
-
-    conn = pg_connect()
-    cursor = conn.cursor()
-
-    df = read_csv_robust(csv_content, sep=sep)
-    df = clean_column_names(df)
-
-    # Ensure table exists
-    col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-    cursor.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs});')
-
-    # Add missing columns dynamically
-    cursor.execute(
-        f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"
-    )
-    existing = {r[0] for r in cursor.fetchall()}
-
-    for col in df.columns:
-        if col not in existing:
-            cursor.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" TEXT;')
-            print(f"🟡 Added new column: {col}")
-
-    insert_sql = f"""
-        INSERT INTO "{table}"
-        ({", ".join([f'"{c}"' for c in df.columns])})
-        VALUES ({", ".join(["%s"] * len(df.columns))})
-    """
-
-    for _, row in df.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    print(f"✔ Appended to {table}: {len(df)} rows")
-
-
-# =====================================================================================
-# ADDRESS PARSER (unchanged)
-# =====================================================================================
-
-
-def parse_address(raw):
-    if raw is None or not isinstance(raw, str):
-        return pd.Series([None] * 5)
-
-    raw = raw.replace("  ", " ").strip()
-
-    if "," in raw:
-        employer, rest = raw.split(",", 1)
-        employer = employer.strip()
-        rest = rest.strip()
-    else:
-        return pd.Series([raw, None, None, None, None])
-
-    tokens = rest.split()
-    if len(tokens) < 3:
-        return pd.Series([employer, None, None, None, None])
-
-    zip_code = tokens[-1] if tokens[-1].isdigit() else None
-    state = tokens[-2]
-    city = tokens[-3]
-    address = " ".join(tokens[:-3]) if len(tokens) > 3 else None
-
-    return pd.Series([employer, address, zip_code, city, state])
-
-
-# =====================================================================================
-# CREATE FATALITIES CLEAN  (FINAL, GUARDED, PRODUCTION-SAFE)
-# =====================================================================================
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
-
-def read_csv_safe(path):
-    return pd.read_csv(
-        path,
-        sep=",",
-        quotechar='"',
-        encoding="latin1",
-        engine="python",
-    )
-
-
-def finalize(df):
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df[df["date"].notna()]
-    df["no_of_fatalities"] = 1
-    df["country"] = "USA"
-    return df[["date", "no_of_fatalities", "country"]]
-
-
-# ------------------------------------------------------------------
-# Fatalities cleaners
-# ------------------------------------------------------------------
-
-def clean_fatalities_1_2(file, out):
-    df = read_csv_safe(file)
-    df = df.iloc[1:]
-    df.columns = ["date", "employer", "victim", "hazard", "fatality", "inspection"]
-    df = df[df["fatality"].notna()]
-    df = finalize(df)
-    df.to_csv(out, index=False)
-    return len(df)
-
-
-def clean_fatalities_3(file, out):
-    df = read_csv_safe(file)
-    df.columns = [
-        "date",
-        "company",
-        "victim",
-        "description",
-        "fatality",
-        "inspection",
-    ] + list(df.columns[6:])
-    df = df[df["fatality"].notna()]
-    df = finalize(df)
-    df.to_csv(out, index=False)
-    return len(df)
-
-
-def clean_fatalities_4(file, out):
-    df = read_csv_safe(file)
-    df.columns = ["date", "company", "description", "fatality", "inspection"] + list(
-        df.columns[5:]
-    )
-    df = df[df["fatality"].notna()]
-    df = finalize(df)
-    df.to_csv(out, index=False)
-    return len(df)
-
-
-def clean_fatalities_5(file, out):
-    df = read_csv_safe(file)
-    df.columns = ["date", "company", "description", "fatality"]
-    df = df[df["fatality"].notna()]
-    df = finalize(df)
-    df.to_csv(out, index=False)
-    return len(df)
-
-
-def clean_fatalities_6_to_9(file, out):
-    df = read_csv_safe(file)
-    df = df.iloc[:, :4]
-    df.columns = ["fiscal_year", "report_date", "date", "fatality"]
-    df = df[df["fatality"].notna()]
-    df = finalize(df)
-    df.to_csv(out, index=False)
-    return len(df)
-
-
-# ------------------------------------------------------------------
-# Robust Postgres loader (GUARDED)
-# ------------------------------------------------------------------
-
-def load_fatalities_to_postgres():
-    print("\n=== Loading fatalities_clean.csv into Postgres ===")
-
-    csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-
-    df = pd.read_csv(csv_path)
-
-    expected_cols = ["date", "no_of_fatalities", "country"]
-    if list(df.columns) != expected_cols:
-        raise ValueError(f"Unexpected columns: {df.columns}")
-
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
-    df = df[df["date"].notna()]
-
-    if df.empty:
-        raise RuntimeError("No valid rows to load into fatalities_clean")
-
-    conn = pg_connect()
-    cur = conn.cursor()
-
-    table = DB_CONFIG["fatalities_clean_table"]
-
-    try:
-        cur.execute(f'DROP TABLE IF EXISTS "{table}"')
-        conn.commit()
-
-        cur.execute(
-            f"""
-            CREATE TABLE "{table}" (
-                fatality_id SERIAL PRIMARY KEY,
-                date DATE NOT NULL,
-                no_of_fatalities INTEGER NOT NULL,
-                country TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
-
-        records = list(df.itertuples(index=False, name=None))
-
-        execute_batch(
-            cur,
-            f"""
-            INSERT INTO "{table}"
-            (date, no_of_fatalities, country)
-            VALUES (%s, %s, %s)
-            """,
-            records,
-            page_size=1000,
-        )
-
-        conn.commit()
-
-        # -----------------------
-        # Guardrail verification
-        # -----------------------
-        cur.execute(f'SELECT COUNT(*) FROM "{table}"')
-        count = cur.fetchone()[0]
-
-        if count != len(records):
-            raise RuntimeError(
-                f"Row count mismatch: inserted={len(records)}, table={count}"
-            )
-
-        print(f"✔ {count} rows verified in {table}")
-
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cur.close()
-        conn.close()
-
-
-# ------------------------------------------------------------------
-# Master orchestration
-# ------------------------------------------------------------------
-# Helper function
-def normalize_country(df: pd.DataFrame, col: str = "country") -> pd.DataFrame:
-    """
-    Normalize country names in the dataframe column to standard names.
-    Currently maps all USA variants to 'USA'.
-    """
-    if col not in df.columns:
-        df[col] = "USA"  # default if column doesn't exist
-        return df
-
-    df[col] = df[col].astype(str).str.strip().str.upper()
-    country_map = {
-        "USA": "USA",
-        "US": "USA",
-        "UNITED STATES": "USA",
-        "UNITED STATES OF AMERICA": "USA",
-        "ETATS-UNIS": "USA",
-        "ETATS UNIS": "USA",
-        # add more mappings if needed
-    }
-    df[col] = df[col].replace(country_map)
-    return df
-
-#======================================================================================
-# 2️⃣ WORKACCIDENTS
-#======================================================================================
+    print(f"Created {dst_table} ({len(df)} rows)")
+
+# ==========================================================================================================
+# DAG_DATA_CLEAN FUNCTIONS: 2. create_workaccidents_clean
+# Data cleaning function for the workaccidents dataset
+# ==========================================================================================================
 
 def create_workaccidents_clean():
     """
@@ -1142,7 +820,7 @@ def create_workaccidents_clean():
 
     if not os.path.exists(raw_csv_path):
         raise FileNotFoundError(
-            f"❌ Required CSV not found: {raw_csv_path}. "
+            f" Required CSV not found: {raw_csv_path}. "
             "dag_data_download must run first."
         )
 
@@ -1150,12 +828,12 @@ def create_workaccidents_clean():
     print(f"CSV size: {file_size} bytes")
 
     if file_size == 0:
-        raise ValueError("❌ CSV file exists but is EMPTY")
+        raise ValueError(" CSV file exists but is EMPTY")
 
     # ----------------------------
     # Step 1: Load raw CSV → Postgres
     # ----------------------------
-    print("\n🔎 STEP 1 — LOAD RAW CSV INTO POSTGRES")
+    print("\n STEP 1 — LOAD RAW CSV INTO POSTGRES")
     print(f"Target table: {src_table}")
 
     load_to_postgres(
@@ -1169,7 +847,7 @@ def create_workaccidents_clean():
     # ----------------------------
     conn = pg_connect()
 
-    print("\n🔎 STEP 2 — RAW TABLE VALIDATION")
+    print("\n STEP 2 — RAW TABLE VALIDATION")
 
     count_df = pd.read_sql(
         f'SELECT COUNT(*) AS cnt FROM "{src_table}"',
@@ -1182,7 +860,7 @@ def create_workaccidents_clean():
     if raw_count == 0:
         conn.close()
         raise RuntimeError(
-            f"❌ Raw table '{src_table}' is EMPTY after load. "
+            f" Raw table '{src_table}' is EMPTY after load. "
             "Aborting to avoid silent data loss."
         )
 
@@ -1192,7 +870,7 @@ def create_workaccidents_clean():
     # ----------------------------
     # Step 3: Cleaning & normalization
     # ----------------------------
-    print("\n🔎 STEP 3 — CLEANING PHASE")
+    print("\n STEP 3 — CLEANING PHASE")
 
     # Drop large text column if present
     if "final_narrative" in df.columns:
@@ -1204,7 +882,7 @@ def create_workaccidents_clean():
 
     if not date_col:
         conn.close()
-        raise RuntimeError("❌ Required column 'eventdate' not found")
+        raise RuntimeError(" Required column 'eventdate' not found")
 
     df["accident_date"] = (
         pd.to_datetime(df[date_col], errors="coerce")
@@ -1231,7 +909,7 @@ def create_workaccidents_clean():
 
     if df_clean.empty:
         conn.close()
-        raise RuntimeError("❌ Cleaning resulted in EMPTY dataframe")
+        raise RuntimeError("Cleaning resulted in EMPTY dataframe")
 
     # Deduplicate
     if "upa" in df_clean.columns:
@@ -1242,7 +920,7 @@ def create_workaccidents_clean():
     # ----------------------------
     # Step 5: Create clean table
     # ----------------------------
-    print("\n🔎 STEP 5 — CREATE CLEAN TABLE")
+    print("\n STEP 5 — CREATE CLEAN TABLE")
 
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
@@ -1267,13 +945,52 @@ def create_workaccidents_clean():
     conn.commit()
     conn.close()
 
-    print(f"✔ Created '{dst_table}' with {inserted} rows")
+    print(f" Created '{dst_table}' with {inserted} rows")
 
+# ==========================================================================================================
+# DAG_DATA_CLEAN FUNCTIONS: 3. create_fatalities_clean
+# Data cleaning function for the fatalities dataset
+# ==========================================================================================================
+# =====================================================================================
+# LOAD FATALITIES_CLEAN INTO POSTGRES
+# =====================================================================================
 
-# ====================================================================================
-# 3️⃣ FATALITIES
-#=====================================================================================
+def load_fatalities_to_postgres():
+    csv_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
+    df = pd.read_csv(csv_path)
 
+    conn = pg_connect()
+    cur = conn.cursor()
+
+    table = DB_CONFIG["fatalities_clean_table"]
+    cur.execute(f'DROP TABLE IF EXISTS "{table}"')
+    cur.execute("""
+        CREATE TABLE fatalities_clean (
+            fatality_id SERIAL PRIMARY KEY,
+            date DATE NOT NULL,
+            no_of_fatalities INTEGER NOT NULL,
+            country TEXT NOT NULL
+        )
+    """)
+
+    records = list(df.itertuples(index=False, name=None))
+    execute_batch(
+        cur,
+        f"""
+        INSERT INTO "{table}" (date, no_of_fatalities, country)
+        VALUES (%s, %s, %s)
+        """,
+        records,
+        page_size=1000,
+    )
+
+    conn.commit()
+    conn.close()
+    print(f"fatalities_clean loaded ({len(records)} rows)")
+
+# =====================================================================================
+# READ FATALITIES CLEAN FILES AND CREATE FINAL COMBINED TABLE
+# =====================================================================================
 def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
 
@@ -1293,101 +1010,49 @@ def create_fatalities_clean():
     for fname, fn in cleaners:
         src = os.path.join(DATA_DIR, fname)
         dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
-
         if not os.path.exists(src):
-            print(f"⚠ File not found, skipping: {src}")
             continue
-
-        rows = fn(src, dst)
-        print(f"✔ {fname} → {rows} rows cleaned")
+        fn(src, dst)
         dfs.append(pd.read_csv(dst))
 
     if not dfs:
-        raise RuntimeError("No fatalities files were cleaned")
+        raise RuntimeError("No fatalities files cleaned")
 
-    # --------------------------------------------------
-    # Merge all cleaned files
-    # --------------------------------------------------
     final_df = pd.concat(dfs, ignore_index=True)
 
-    # --------------------------------------------------
-    # 🔹 NEW: Persist RAW fatalities table (before any normalization)
-    # --------------------------------------------------
+    # RAW TABLE
     conn = pg_connect()
     cur = conn.cursor()
-
-    print("🧱 Creating raw fatalities table in Postgres")
-
     cur.execute("DROP TABLE IF EXISTS fatalities")
-
     col_defs = ", ".join([f'"{c}" TEXT' for c in final_df.columns])
-    cur.execute(f"""
-        CREATE TABLE fatalities (
-            {col_defs}
-        )
-    """)
+    cur.execute(f"CREATE TABLE fatalities ({col_defs})")
 
     insert_sql = f"""
         INSERT INTO fatalities ({", ".join([f'"{c}"' for c in final_df.columns])})
         VALUES ({", ".join(["%s"] * len(final_df.columns))})
     """
 
-    for _, row in final_df.iterrows():
-        cur.execute(
-            insert_sql,
-            [None if pd.isna(v) else str(v) for v in row.values]
-        )
+    for _, r in final_df.iterrows():
+        cur.execute(insert_sql, [None if pd.isna(v) else str(v) for v in r.values])
 
     conn.commit()
-    print(f"✔ Raw fatalities table created ({len(final_df)} rows)")
-
-    # --------------------------------------------------
-    # Continue EXISTING behavior unchanged
-    # --------------------------------------------------
-
-    # Normalize country for CLEAN dataset
-    final_df = normalize_country(final_df, "country")
-
-    final_path = os.path.join(DATA_DIR, "fatalities_clean.csv")
-    final_df.to_csv(final_path, index=False)
-    print(f"✔ Final merge written: {final_path} ({len(final_df)} rows)")
-
-    load_fatalities_to_postgres()
-    print("✔ fatalities_clean loaded into Postgres")
-
     conn.close()
+    print(f"Raw fatalities table created ({len(final_df)} rows)")
 
-   
-def normalize_country(df, column_name):
-    """
-    Normalize country values in a DataFrame column.
-    Converts None/NaN to 'UNKNOWN', strips whitespace, uppercases,
-    normalizes accents, and maps common synonyms to canonical names.
-    """
-    if column_name not in df.columns:
-        return df
+    # CLEAN
+    final_df = normalize_country(final_df)
+    final_df.to_csv(os.path.join(DATA_DIR, "fatalities_clean.csv"), index=False)
+    load_fatalities_to_postgres()
+
     
-    def normalize_value(value):
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return "UNKNOWN"
-        s = str(value).strip().upper()
-        # Normalize accents
-        s = s.replace("É", "E").replace("È", "E").replace("Ê", "E")
-        # Map common synonyms
-        if s in {"USA", "US", "UNITED STATES", "ETATS-UNIS", "ETATS UNIS", "ETATSUNIS"}:
-            return "USA"
-        if s in {"UK", "UNITED KINGDOM", "ROYAUME-UNI"}:
-            return "UK"
-        if s == "FRANCE":
-            return "FRANCE"
-        if s in {"GERMANY", "ALLEMAGNE"}:
-            return "GERMANY"
-        if s == "CANADA":
-            return "CANADA"
-        return s
-
-    df[column_name] = df[column_name].apply(normalize_value)
-    return df
+# ==========================================================================================================
+# DAG_DATA_PREP FUNCTIONS:  1. create_ariadb_prep, 2. create_workaccidents_clean 2. create_fatalities_prep
+# Data preparation functions for star schema source tables
+# ==========================================================================================================
+# ==========================================================================================================
+# DAG_DATA_PREP FUNCTIONS:  1. create_ariadb_prep
+# create ariadb_prep table from ariadb_clean
+# ==========================================================================================================
 
 def create_ariadb_prep():
     src_table = DB_CONFIG["ariadb_clean_table"]
@@ -1395,42 +1060,42 @@ def create_ariadb_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename and convert date to string YYYY-MM-DD
+    # 1 Rename and convert date to string YYYY-MM-DD
     if "incident_date" in df.columns:
         df["date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["incident_date"], inplace=True)
 
-    # 2️⃣ Normalize country
+    # 2 Normalize country
     if "country" in df.columns:
         df = normalize_country(df, "country")
     else:
         df["country"] = "UNKNOWN"
 
-    # 3️⃣ Convert numeric IDs
+    # 3 Convert numeric IDs
     for col in ["industry_code", "aria_id"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    # 4️⃣ Add fatality flag based on hazard_class
+    # 4 Add fatality flag based on hazard_class
     df["fatality"] = df.get("hazard_class", "").apply(
         lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
     )
 
-    # 5️⃣ Drop rows where all key columns are null
+    # 5 Drop rows where all key columns are null
     key_cols = ["aria_id","date","country","department","municipality","hazard_class","industry_code"]
     existing_keys = [c for c in key_cols if c in df.columns]
     df = df.dropna(how="all", subset=existing_keys)
 
-    # 6️⃣ Drop rows with only PK populated
+    # 6 Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "aria_id"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 7️⃣ Deduplicate on PK
+    # 7 Deduplicate on PK
     if "aria_id" in df.columns:
         df = df.drop_duplicates(subset=["aria_id"])
 
-    # 8️⃣ Create prep table with correct types
+    # 8 Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = []
@@ -1444,7 +1109,7 @@ def create_ariadb_prep():
     pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 9️⃣ Insert data
+    # 9 Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1454,7 +1119,12 @@ def create_ariadb_prep():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created ariadb_prep ({len(df)} rows)")
+    print(f" Created ariadb_prep ({len(df)} rows)")
+    
+# ==========================================================================================================
+# DAG_DATA_PREP FUNCTIONS:  2. create_workaccidents_prep
+# create workaccidents_prep table from workaccidents_clean
+# ==========================================================================================================
 
 def create_workaccidents_prep():
     src_table = DB_CONFIG["workaccidents_clean_table"]
@@ -1462,39 +1132,39 @@ def create_workaccidents_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename and convert date
+    # 1 Rename and convert date
     if "accident_date" in df.columns:
         df["date"] = pd.to_datetime(df["accident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
         df.drop(columns=["accident_date"], inplace=True)
 
-    # 2️⃣ Normalize country
+    # 2 Normalize country
     if "country" not in df.columns:
         df["country"] = "USA"
     df = normalize_country(df, "country")
 
-    # 3️⃣ Convert numeric IDs
+    # 3 Convert numeric IDs
     for col in ["upa","primary_naics"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    # 4️⃣ Add fatality flag based on naturetitle
+    # 4 Add fatality flag based on naturetitle
     df["fatality"] = df.get("naturetitle", "").apply(lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0)
 
-    # 5️⃣ Drop rows where all key columns are null
+    # 5 Drop rows where all key columns are null
     key_cols = ["upa","id","date","country","employer","city","state","primary_naics","event","naturetitle"]
     existing_keys = [c for c in key_cols if c in df.columns]
     df = df.dropna(how="all", subset=existing_keys)
 
-    # 6️⃣ Drop rows with only PK populated
+    # 6 Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "upa"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 7️⃣ Deduplicate on PK
+    # 7 Deduplicate on PK
     if "upa" in df.columns:
         df = df.drop_duplicates(subset=["upa"])
 
-    # 8️⃣ Create prep table with correct types
+    # 8 Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = []
@@ -1508,7 +1178,7 @@ def create_workaccidents_prep():
     pk = ", PRIMARY KEY (upa)" if "upa" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 9️⃣ Insert data
+    # 9 Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1518,7 +1188,12 @@ def create_workaccidents_prep():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created workaccidents_prep ({len(df)} rows)")
+    print(f" Created workaccidents_prep ({len(df)} rows)")
+  
+# ==========================================================================================================
+# DAG_DATA_PREP FUNCTIONS:  3. create_fatalities_prep
+# create fatalities_prep table from fatalities_clean
+# ==========================================================================================================
 
 def create_fatalities_prep():
     src_table = DB_CONFIG["fatalities_clean_table"]
@@ -1526,35 +1201,35 @@ def create_fatalities_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Convert date
+    # 1 Convert date
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    # 2️⃣ Normalize country
+    # 2 Normalize country
     if "country" not in df.columns:
         df["country"] = "UNKNOWN"
     df = normalize_country(df, "country")
 
-    # 3️⃣ Convert fatality column to int
+    # 3 Convert fatality column to int
     if "no_of_fatalities" in df.columns:
         df["fatality"] = df["no_of_fatalities"].apply(lambda x: 1 if pd.notna(x) and x > 0 else 0)
     else:
         df["fatality"] = 1
 
-    # 4️⃣ Drop rows where all key columns are null
+    # 4 Drop rows where all key columns are null
     key_cols = ["fatality_id","date","country","fatality"]
     df = df.dropna(how="all", subset=[c for c in key_cols if c in df.columns])
 
-    # 5️⃣ Drop rows with only PK populated
+    # 5 Drop rows with only PK populated
     non_pk_cols = [c for c in key_cols if c != "fatality_id" and c in df.columns]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 6️⃣ Deduplicate on PK
+    # 6 Deduplicate on PK
     if "fatality_id" in df.columns:
         df = df.drop_duplicates(subset=["fatality_id"])
 
-    # 7️⃣ Create prep table with correct types
+    # 7 Create prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
     col_defs = []
@@ -1568,7 +1243,7 @@ def create_fatalities_prep():
     pk = ", PRIMARY KEY (fatality_id)" if "fatality_id" in df.columns else ""
     cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 8️⃣ Insert data
+    # 8 Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1578,213 +1253,19 @@ def create_fatalities_prep():
 
     conn.commit()
     conn.close()
-    print(f"✔ Created fatalities_prep ({len(df)} rows)")
-
-
-# =====================================================================================
-# DATABASE PROFILING
-# =====================================================================================
-
-def profile_db(db_config=DB_CONFIG, output_dir=DATA_DIR):
-    os.makedirs(output_dir, exist_ok=True)
-
-    tables = [
-        db_config["ariadb_clean_table"],
-        db_config["fatalities_clean_table"],
-        "workaccidents_clean",
-    ]
-
-    conn = pg_connect()
-
-    profile_records = []
-
-    for table in tables:
-        df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
-
-        for col in df.columns:
-            profile_records.append(
-                {
-                    "table": table,
-                    "column": col,
-                    "dtype": str(df[col].dtype),
-                    "non_null": df[col].notna().sum(),
-                    "missing": df[col].isna().sum(),
-                    "unique": df[col].nunique(dropna=True),
-                    "top_5": df[col].value_counts(dropna=False).head(5).to_dict(),
-                }
-            )
-
-    df_prof = pd.DataFrame(profile_records)
-    profile_path = os.path.join(output_dir, "db_profiling_report.csv")
-    df_prof.to_csv(profile_path, index=False)
-
-    print(f"✔ Profile saved to {profile_path}")
-    conn.close()
+    print(f" Created fatalities_prep ({len(df)} rows)")
     
-def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
-    """
-    End-to-end flow:
-        Source CSV (URL)
-            → MongoDB temp collection (batch inserts, safe column keys)
-            → Atomic rename to main collection
-            → Export back to CSV ($DATA_DIR/ariadb.csv)
+    
+# ==========================================================================================================
+# DAG_DATA_ANALYZE FUNCTIONS:  1. drop_dimensions, 2. drop_fact, 3. create_dimensions, 4. populate_dimensions
+# 5. create_fact, 6.populate_fact, 7. min_test_star_schema, 8. full_test_star_schema
+# for star schema creation and testing
+# ==========================================================================================================
+# ==========================================================================================================
+# DAG_DATA_ANALYZE FUNCTIONS:  1. drop_dimensions
+# Drops all star schema dimension tables if they exist.
+# ==========================================================================================================
 
-    The output CSV filename is fixed by contract. Batch inserts prevent memory issues.
-    """
-    print(f"[DEBUG] Starting download_ariadb_via_mongo for URL: {url}")
-
-    # ------------------------------------------------------------------------
-    # Step 1: Download CSV from source URL
-    # ------------------------------------------------------------------------
-    try:
-        print("[DEBUG] Attempting UTF-8 CSV read")
-        df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
-        print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
-    except UnicodeDecodeError:
-        print("[WARNING] UTF-8 failed, trying latin1")
-        try:
-            df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
-            print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
-        except Exception:
-            print("[ERROR] CSV read failed (latin1)")
-            traceback.print_exc()
-            sys.exit(1)
-    except Exception:
-        print("[ERROR] CSV download failed")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # ------------------------------------------------------------------------
-    # Step 2: Add ETL metadata
-    # ------------------------------------------------------------------------
-    try:
-        run_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-        df["_etl_run_id"] = run_id
-        df["_etl_loaded_at"] = datetime.utcnow()
-        print(f"[DEBUG] ETL metadata added (_etl_run_id={run_id})")
-    except Exception:
-        print("[ERROR] Failed to add ETL metadata")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # ------------------------------------------------------------------------
-    # Step 3: Load into MongoDB (temp → atomic rename) with batch inserts
-    # ------------------------------------------------------------------------
-    client = get_mongo_client()
-    db = client[MONGO_DB]
-    tmp_coll_name = f"{MONGO_COLLECTION}_tmp"
-    tmp_coll = db[tmp_coll_name]
-
-    try:
-        # Drop tmp collection if exists
-        if tmp_coll_name in db.list_collection_names():
-            db.drop_collection(tmp_coll_name)
-
-        # Clean column names: remove None, strip, fallback to col_i
-        df.columns = [
-            str(c).strip() if c is not None and str(c).strip() != "" else f"col_{i}"
-            for i, c in enumerate(df.columns)
-        ]
-
-        # Batch insert to avoid memory issues
-        records = df.to_dict(orient="records")
-        for i in range(0, len(records), batch_size):
-            batch = records[i:i+batch_size]
-            tmp_coll.insert_many(batch)
-
-        # Verify row count
-        if tmp_coll.count_documents({}) != len(df):
-            raise RuntimeError("Row count mismatch after Mongo insert")
-
-        # Atomic rename
-        if MONGO_COLLECTION in db.list_collection_names():
-            db.drop_collection(MONGO_COLLECTION)
-        tmp_coll.rename(MONGO_COLLECTION)
-        print(f"[DEBUG] Mongo atomic rename: {tmp_coll_name} → {MONGO_COLLECTION}")
-
-    except Exception:
-        print("[ERROR] MongoDB load/rename failed")
-        traceback.print_exc()
-        sys.exit(1)
-    finally:
-        client.close()
-        print("✔ MongoDB connection closed")
-
-    # ------------------------------------------------------------------------
-    # Step 4: Export MongoDB → CSV (fixed path)
-    # ------------------------------------------------------------------------
-    try:
-        print(f"[INFO] Exporting MongoDB collection '{MONGO_DB}.{MONGO_COLLECTION}' → 'ariadb.csv'")
-        export_mongo_to_csv("ariadb.csv")
-        print(f"[OK] ariadb.csv written to {DATA_DIR}")
-    except Exception:
-        print("[ERROR] MongoDB export to CSV failed")
-        traceback.print_exc()
-        sys.exit(1)
-
-        # ------------------------------------------------------------------------
-    # Step 5: Load MongoDB collection into Postgres table 'ariadb'
-    # ------------------------------------------------------------------------
-    try:
-        
-        conn = pg_connect()
-        cur = conn.cursor()
-        dst_table = "ariadb"
-
-        # Drop table if exists
-        cur.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
-
-        # Create table with all columns as TEXT
-        col_defs = ", ".join([f'"{c}" TEXT' for c in df.columns])
-        cur.execute(f'CREATE TABLE "{dst_table}" ({col_defs})')
-
-        # Insert rows in batches
-        insert_sql = f"""
-            INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
-            VALUES ({", ".join(["%s"] * len(df.columns))})
-        """
-        for i in range(0, len(df), batch_size):
-            batch = df.iloc[i:i+batch_size]
-            cur.executemany(insert_sql, batch.where(pd.notnull(batch), None).values.tolist())
-
-        conn.commit()
-        conn.close()
-        print(f"✔ MongoDB collection loaded into Postgres table '{dst_table}' ({len(df)} rows)")
-
-    except Exception:
-        print("[ERROR] Failed to load ARIADB into Postgres")
-        traceback.print_exc()
-        sys.exit(1)
-
-# =====================================================================================
-# STAR SCHEMA CREATION — EXACT ORIGINAL LOGIC
-# =====================================================================================
-
-def log_and_count(func, step_name, table_name=None):
-    """
-    Wrapper for Airflow PythonOperator:
-    - Logs start and end of step
-    - Optionally logs row count for a given table
-    """
-    def wrapped(*args, **kwargs):
-        logging.info(f"▶ START: {step_name}")
-        result = func(*args, **kwargs)
-
-        # If table_name is provided, count rows in Postgres
-        if table_name:
-            conn = pg_connect()
-            df = pd.read_sql(f'SELECT COUNT(*) AS cnt FROM "{table_name}"', conn)
-            logging.info(f"✔ {step_name}: {df['cnt'][0]} rows in {table_name}")
-            conn.close()
-        else:
-            logging.info(f"✔ END: {step_name}")
-        return result
-    return wrapped
-
-
-# --------------------------
-# Drop dimension tables
-# --------------------------
 def drop_dimensions(*args, **kwargs):
     """
     Drops all star schema dimension tables if they exist.
@@ -1798,10 +1279,27 @@ def drop_dimensions(*args, **kwargs):
         cur.execute(f'DROP TABLE IF EXISTS "{t}" CASCADE')
     conn.commit()
     conn.close()
+    
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  2. drop_fact
+# Drops the star schema fact table if it exists.
+# ==========================================================================================================
 
-# --------------------------
-# Create dimension tables
-# --------------------------
+def drop_fact(*args, **kwargs):
+    """
+    Drops the star schema fact table if it exists.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+    cur.execute('DROP TABLE IF EXISTS fact_accidents CASCADE')
+    conn.commit()
+    conn.close()
+
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  3. create_dimensions
+# Creates all dimension tables (without data) for the star schema.
+# ==========================================================================================================
+
 def create_dimensions(*args, **kwargs):
     """
     Creates all dimension tables (without data) for the star schema.
@@ -1884,111 +1382,12 @@ def create_dimensions(*args, **kwargs):
 
     conn.commit()
     conn.close()
-    print("✅ Dimension tables created successfully")
+    print(" Dimension tables created successfully")
 
-
-# --------------------------
-# Populate dimension tables
-# -------------------------
-
-def populate_fact(*args, **kwargs):
-    """
-    Populates the fact_accidents table from prep tables and dimension tables.
-    Prep tables already have correct types, so no further conversion needed.
-    Full debug: tracks prep source, duplicates, missing FKs, and bulk insert.
-    """
-    conn = pg_connect()
-    cur = conn.cursor()
-
-    print("🔎 Loading prep tables for fact table population...")
-
-    # ----------------------------
-    # Load prep tables with source tracking
-    # ----------------------------
-    df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
-    df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
-    df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
-
-    df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-    print(f"📊 Combined prep tables: {len(df_fact)} rows")
-    print("Sample prep sources distribution:")
-    print(df_fact['__source'].value_counts())
-
-    # ----------------------------
-    # Standardize join columns (strings only)
-    # ----------------------------
-    df_fact["date"] = df_fact["date"].astype(str).str.strip()
-    df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
-
-    # ----------------------------
-    # Load dimension tables
-    # ----------------------------
-    dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
-    dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
-    dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
-    dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
-    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
-    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
-
-    dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
-    dim_date["date"] = dim_date["date"].astype(str).str.strip()
-
-    # ----------------------------
-    # Merge dimension tables
-    # ----------------------------
-    print("🔗 Merging dimension tables into prep data...")
-    df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
-    df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
-    df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
-    df_fact = df_fact.merge(dim_employer, how="left", on="employer")
-    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
-    df_fact = df_fact.merge(dim_date, how="left", on="date")
-
-    # ----------------------------
-    # FK checks
-    # ----------------------------
-    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
-    missing_fk_counts = df_fact[fk_cols].isna().sum()
-    print("⚠ Missing foreign keys count per column:")
-    print(missing_fk_counts)
-
-    # ----------------------------
-    # Duplicate check
-    # ----------------------------
-    duplicate_count = df_fact.duplicated(subset=fk_cols + ["fatality"]).sum()
-    print(f"🧩 Total duplicates (FKs + fatality): {duplicate_count}")
-
-    # ----------------------------
-    # Prepare final fact table (already correctly typed)
-    # ----------------------------
-    df_fact_final = df_fact[fk_cols + ["fatality"]].copy()
-
-    # ----------------------------
-    # Drop rows with missing FKs
-    # ----------------------------
-    df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
-    print(f"🚀 Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
-
-    # ----------------------------
-    # Bulk insert using execute_values
-    # ----------------------------
-    rows_to_insert = [tuple(x) for x in df_fact_final_clean.to_numpy()]
-    sql = """
-        INSERT INTO fact_accidents (
-            date_id, country_id, industry_id, accident_type_id,
-            hazard_id, employer_id, fatality
-        ) VALUES %s
-    """
-    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
-
-    conn.commit()
-    conn.close()
-    print(f"✅ Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
-
-
-# --------------------------
-# Populate dimension tables
-# --------------------------
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  4. populate_dimensions
+# Populates all dimension tables from prep tables with proper primary keys.
+# ==========================================================================================================  
 
 def populate_dimensions(*args, **kwargs):
     """
@@ -1998,7 +1397,7 @@ def populate_dimensions(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("🔎 Loading prep tables for dimension population...")
+    print(" Loading prep tables for dimension population...")
 
     # Load prep tables (cleaned and normalized with dates, country, fatality)
     df_aria = pd.read_sql('SELECT * FROM ariadb_prep', conn)
@@ -2024,7 +1423,7 @@ def populate_dimensions(*args, **kwargs):
             )
             inserted += 1
         conn.commit()
-        print(f"✔ Populated {table} with {inserted} unique values from column '{col}'")
+        print(f" Populated {table} with {inserted} unique values from column '{col}'")
 
     # ----------------------------
     # Populate standard dimensions
@@ -2050,7 +1449,7 @@ def populate_dimensions(*args, **kwargs):
         )
         inserted_dates += 1
     conn.commit()
-    print(f"✔ Populated dim_date with {inserted_dates} unique dates")
+    print(f" Populated dim_date with {inserted_dates} unique dates")
 
     # ----------------------------
     # Populate dim_country
@@ -2062,92 +1461,20 @@ def populate_dimensions(*args, **kwargs):
     ]).dropna().drop_duplicates()
 
     predefined_codes = {
-        "FRANCE": "FR",
-        "USA": "US",
-        "GERMANY": "DE",
-        "UK": "GB",
-        "PAYS-BAS": "NL",
-        "AUTRICHE": "AT",
-        "LIBAN": "LB",
-        "CHINE": "CN",
-        "HONGRIE": "HU",
-        "BELGIQUE": "BE",
-        "SUEDE": "SE",
-        "ITALIE": "IT",
-        "SUISSE": "CH",
-        "BRESIL": "BR",
-        "DANEMARK": "DK",
-        "SENEGAL": "SN",
-        "INDE": "IN",
-        "FINLANDE": "FI",
-        "BULGARIE": "BG",
-        "POLOGNE": "PL",
-        "CANADA": "CA",
-        "LITUANIE": "LT",
-        "AUSTRALIE": "AU",
-        "MEXIQUE": "MX",
-        "ESPAGNE": "ES",
-        "JAPON": "JP",
-        "NOUVELLE-ZELANDE": "NZ",
-        "PORTUGAL": "PT",
-        "SLOVENIE": "SI",
-        "TCHEQUE (REP.)": "CZ",
-        "UKRAINE": "UA",
-        "BIELORUSSIE": "BY",
-        "ROUMANIE": "RO",
-        "SLOVAQUIE": "SK",
-        "COREE DU SUD": "KR",
-        "JORDANIE": "JO",
-        "OUZBEKISTAN": "UZ",
-        "LAOS": "LA",
-        "VENEZUELA": "VE",
-        "CHYPRE": "CY",
-        "GRECE": "GR",
-        "RUSSIE": "RU",
-        "ESTONIE": "EE",
-        "CONGO (REP.)": "CG",
-        "SRI LANKA": "LK",
-        "PAKISTAN": "PK",
-        "ZIMBABWE": "ZW",
-        "IRLANDE": "IE",
-        "AFRIQUE DU SUD": "ZA",
-        "CUBA": "CU",
-        "PEROU": "PE",
-        "SIERRA LEONE": "SL",
-        "TAIWAN": "TW",
-        "ARABIE SAOUDITE": "SA",
-        "ALGERIE": "DZ",
-        "TURQUIE": "TR",
-        "LIBYE": "LY",
-        "IRAK": "IQ",
-        "ISRAEL": "IL",
-        "OUGANDA": "UG",
-        "INDONESIE": "ID",
-        "SAINTE-LUCIE": "LC",
-        "HAITI": "HT",
-        "MAROC": "MA",
-        "LUXEMBOURG": "LU",
-        "NORVEGE": "NO",
-        "NIGERIA": "NG",
-        "MAURICE": "MU",
-        "NIGER": "NE",
-        "KENYA": "KE",
-        "ETHIOPIE": "ET",
-        "SURINAME": "SR",
-        "AZERBAIDJAN": "AZ",
-        "GHANA": "GH",
-        "KAZAKHSTAN": "KZ",
-        "CAMEROUN": "CM",
-        "SEYCHELLES": "SC",
-        "CHILI": "CL",
-        "COLOMBIE": "CO",
-        "EQUATEUR": "EC",
-        "UNKNOWN": "XX"
+        "FRANCE": "FR","USA": "US", "GERMANY": "DE", "UK": "GB", "PAYS-BAS": "NL", "AUTRICHE": "AT", "LIBAN": "LB", "CHINE": "CN",
+        "HONGRIE": "HU", "BELGIQUE": "BE", "SUEDE": "SE", "ITALIE": "IT",  "SUISSE": "CH", "BRESIL": "BR", "DANEMARK": "DK",
+        "SENEGAL": "SN", "INDE": "IN", "FINLANDE": "FI", "BULGARIE": "BG", "POLOGNE": "PL", "CANADA": "CA", "LITUANIE": "LT",
+        "AUSTRALIE": "AU", "MEXIQUE": "MX", "ESPAGNE": "ES", "JAPON": "JP", "NOUVELLE-ZELANDE": "NZ", "PORTUGAL": "PT", "SLOVENIE": "SI",
+        "TCHEQUE (REP.)": "CZ", "UKRAINE": "UA", "BIELORUSSIE": "BY", "ROUMANIE": "RO", "SLOVAQUIE": "SK", "COREE DU SUD": "KR",
+        "JORDANIE": "JO", "OUZBEKISTAN": "UZ", "LAOS": "LA", "VENEZUELA": "VE", "CHYPRE": "CY", "GRECE": "GR", "RUSSIE": "RU",
+        "ESTONIE": "EE", "CONGO (REP.)": "CG", "SRI LANKA": "LK", "PAKISTAN": "PK", "THAILANDE": "TH", "ZIMBABWE": "ZW", "IRLANDE": "IE",
+        "AFRIQUE DU SUD": "ZA", "CUBA": "CU", "PEROU": "PE", "SIERRA LEONE": "SL", "TAIWAN": "TW", "ARABIE SAOUDITE": "SA", "ALGERIE": "DZ",
+        "TURQUIE": "TR", "LIBYE": "LY", "IRAK": "IQ", "ISRAEL": "IL", "OUGANDA": "UG", "INDONESIE": "ID", "SAINTE-LUCIE": "LC", 
+        "HAITI": "HT", "MAROC": "MA", "LUXEMBOURG": "LU", "NORVEGE": "NO", "NIGERIA": "NG", "MAURICE": "MU", "NIGER": "NE", "KENYA": "KE",
+        "ETHIOPIE": "ET", "SURINAME": "SR", "AZERBAIDJAN": "AZ", "GHANA": "GH", "KAZAKHSTAN": "KZ", "CAMEROUN": "CM", "SEYCHELLES": "SC",
+        "CHILI": "CL", "COLOMBIE": "CO", "EQUATEUR": "EC", "UNKNOWN": "XX"
         # more countries can be added as needed
 }
-
-    
-
     inserted_countries = 0
     for c in all_countries:
         code = predefined_codes.get(c.upper(), "XX")
@@ -2161,28 +1488,15 @@ def populate_dimensions(*args, **kwargs):
         )
         inserted_countries += 1
     conn.commit()
-    print(f"✔ Populated dim_country with {inserted_countries} unique countries")
+    print(f" Populated dim_country with {inserted_countries} unique countries")
 
     conn.close()
-    print("✅ Dimension tables populated successfully from prep tables")
+    print(" Dimension tables populated successfully from prep tables")
 
-
-# --------------------------
-# Drop fact table
-# --------------------------
-def drop_fact(*args, **kwargs):
-    """
-    Drops the star schema fact table if it exists.
-    """
-    conn = pg_connect()
-    cur = conn.cursor()
-    cur.execute('DROP TABLE IF EXISTS fact_accidents CASCADE')
-    conn.commit()
-    conn.close()
-
-# --------------------------
-# Create fact table
-# --------------------------
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  5. create_fact
+# Creates the fact_accidents table for the star schema (with no data).
+# =========================================================================================================
 
 def create_fact(*args, **kwargs):
     conn = pg_connect()
@@ -2202,16 +1516,114 @@ def create_fact(*args, **kwargs):
 
     conn.commit()
     conn.close()
-    print("✅ fact_accidents table created successfully")
+    print(" fact_accidents table created successfully")
     
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  6. populate_fact
+# Populates the fact_accidents table from prep tables and dimension tables.
+# =========================================================================================================
 
-# ------------------------------
-# MINIMAL STAR SCHEMA TEST
-# ------------------------------
 
-# ------------------------------
-# MINIMAL STAR SCHEMA TEST
-# ------------------------------
+def populate_fact(*args, **kwargs):
+    """
+    Populates the fact_accidents table from prep tables and dimension tables.
+    Prep tables already have correct types, so no further conversion needed.
+    Full debug: tracks prep source, duplicates, missing FKs, and bulk insert.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+
+    print(" Loading prep tables for fact table population...")
+
+    # ----------------------------
+    # Load prep tables with source tracking
+    # ----------------------------
+    df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
+    df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
+    df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
+
+    df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
+    print(f" Combined prep tables: {len(df_fact)} rows")
+    print("Sample prep sources distribution:")
+    print(df_fact['__source'].value_counts())
+
+    # ----------------------------
+    # Standardize join columns (strings only)
+    # ----------------------------
+    df_fact["date"] = df_fact["date"].astype(str).str.strip()
+    df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
+
+    # ----------------------------
+    # Load dimension tables
+    # ----------------------------
+    dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
+    dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
+    dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
+    dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
+    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
+    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
+
+    dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
+    dim_date["date"] = dim_date["date"].astype(str).str.strip()
+
+    # ----------------------------
+    # Merge dimension tables
+    # ----------------------------
+    print(" Merging dimension tables into prep data...")
+    df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
+    df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
+    df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
+    df_fact = df_fact.merge(dim_employer, how="left", on="employer")
+    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
+    df_fact = df_fact.merge(dim_date, how="left", on="date")
+
+    # ----------------------------
+    # FK checks
+    # ----------------------------
+    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
+    missing_fk_counts = df_fact[fk_cols].isna().sum()
+    print(" Missing foreign keys count per column:")
+    print(missing_fk_counts)
+
+    # ----------------------------
+    # Duplicate check
+    # ----------------------------
+    duplicate_count = df_fact.duplicated(subset=fk_cols + ["fatality"]).sum()
+    print(f" Total duplicates (FKs + fatality): {duplicate_count}")
+
+    # ----------------------------
+    # Prepare final fact table (already correctly typed)
+    # ----------------------------
+    df_fact_final = df_fact[fk_cols + ["fatality"]].copy()
+
+    # ----------------------------
+    # Drop rows with missing FKs
+    # ----------------------------
+    df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
+    print(f" Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
+
+    # ----------------------------
+    # Bulk insert using execute_values
+    # ----------------------------
+    rows_to_insert = [tuple(x) for x in df_fact_final_clean.to_numpy()]
+    sql = """
+        INSERT INTO fact_accidents (
+            date_id, country_id, industry_id, accident_type_id,
+            hazard_id, employer_id, fatality
+        ) VALUES %s
+    """
+    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
+
+    conn.commit()
+    conn.close()
+    print(f" Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
+
+
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  7. min_test_star_schema
+# Minimal test of star schema functions.
+#  =========================================================================================================
+
 def min_test_star_schema(*args, **kwargs):
     """
     Select top 5 rows from fact_accidents to ensure foreign keys exist.
@@ -2227,20 +1639,22 @@ def min_test_star_schema(*args, **kwargs):
     df_test = pd.read_sql(query, conn)
     conn.close()
 
-    print("✔ min_test_star_schema result (top 5 rows):")
+    print("min_test_star_schema result (top 5 rows):")
     print(df_test)
-    print("\n🔎 Data types:")
+    print("\n Data types:")
     print(df_test.dtypes)
-    print("\n🔎 Numeric ranges:")
+    print("\n Numeric ranges:")
     for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'fatality']:
         if col in df_test.columns:
             print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
 
     return df_test
 
-# ------------------------------
-# FULL STAR SCHEMA TEST
-# ------------------------------
+# ==========================================================================================================
+# DAG_DATA_ANALYSE FUNCTIONS:  8. full_test_star_schema
+# Full test of star schema functions with joins to all dimensions.
+#  =========================================================================================================
+
 def full_test_star_schema(*args, **kwargs):
     """
     Select top 20 rows from fact_accidents with joins to all dimensions.
@@ -2268,16 +1682,192 @@ def full_test_star_schema(*args, **kwargs):
     df_test = pd.read_sql(query, conn)
     conn.close()
 
-    print("✔ full_test_star_schema query returned:")
+    print(" full_test_star_schema query returned:")
     print(df_test.head(20))
     print(f"Total rows returned: {len(df_test)}")
 
     # Debug: data types and ranges
-    print("\n🔎 Data types:")
+    print("\n Data types:")
     print(df_test.dtypes)
-    print("\n🔎 Numeric ranges for IDs and fatality:")
+    print("\n Numeric ranges for IDs and fatality:")
     for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'fatality']:
         if col in df_test.columns:
             print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
 
     return df_test
+
+# ==========================================================================================================
+# DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
+# Run key analytics validation queries on the star schema fact table.
+# ==========================================================================================================
+
+def print_section(title, df):
+    print("\n" + "="*80)
+    print(f"== {title.upper()} ==")
+    print("="*80 + "\n")
+    print(df.to_string(index=False))
+
+def save_df_to_file(df, filename):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = os.path.join(DATA_DIR, f"{filename}.txt")
+    df.to_csv(path, sep="\t", index=False)
+    print(f" Output saved to {path}")
+
+def run_analytics_validation():
+    """
+    Runs all analytics validation queries touching date, country, and fatalities.
+    Saves outputs to DATA_DIR as text files.
+    """
+    conn = pg_connect()
+
+    queries = [
+        # 1. Fatalities by Year
+        {
+            "title": "Fatalities by Year",
+            "sql": """
+                SELECT d.date AS year, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_date d ON f.date_id = d.date_id
+                GROUP BY d.date
+                ORDER BY d.date
+            """,
+            "file": "fatalities_by_year"
+        },
+        # 2. Fatalities by Country
+        {
+            "title": "Fatalities by Country",
+            "sql": """
+                SELECT c.country_name AS country, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                GROUP BY c.country_name
+                ORDER BY total_fatalities DESC
+            """,
+            "file": "fatalities_by_country"
+        },
+        # 3. Fatalities by Industry
+        {
+            "title": "Fatalities by Industry",
+            "sql": """
+                SELECT i.industry_code AS industry, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_industry i ON f.industry_id = i.industry_id
+                GROUP BY i.industry_code
+                ORDER BY total_fatalities DESC
+            """,
+            "file": "fatalities_by_industry"
+        },
+        # 4. Evolution of fatalities France vs USA (last decade)
+        {
+            "title": "Evolution of fatalities France vs USA (last decade)",
+            "sql": """
+                SELECT d.date AS year, c.country_name, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_date d ON f.date_id = d.date_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                WHERE c.country_name IN ('France', 'USA')
+                  AND d.date >= EXTRACT(YEAR FROM CURRENT_DATE) - 10
+                GROUP BY d.date, c.country_name
+                ORDER BY d.date, c.country_name
+            """,
+            "file": "evolution_fatalities_france_usa"
+        },
+        # 5. Top 10 countries by fatalities last year
+        {
+            "title": "Top 10 countries by fatalities last year",
+            "sql": """
+                SELECT c.country_name, d.date AS year, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_date d ON f.date_id = d.date_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                WHERE d.date = EXTRACT(YEAR FROM CURRENT_DATE) - 1
+                GROUP BY c.country_name, d.date
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "file": "top10_countries_last_year"
+        },
+        # 6. Top 10 industries by fatalities last year
+        {
+            "title": "Top 10 industries by fatalities last year",
+            "sql": """
+                SELECT i.industry_code, c.country_name, d.date AS year, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_date d ON f.date_id = d.date_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_industry i ON f.industry_id = i.industry_id
+                WHERE d.date = EXTRACT(YEAR FROM CURRENT_DATE) - 1
+                GROUP BY i.industry_code, c.country_name, d.date
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "file": "top10_industries_last_year"
+        },
+        # 7. Countries with zero fatalities last year (top 10)
+        {
+            "title": "Countries with zero fatalities last year",
+            "sql": """
+                SELECT c.country_name, d.date AS year, COUNT(f.fatality) AS total_fatalities
+                FROM dim_country c
+                CROSS JOIN (SELECT DISTINCT date AS year FROM dim_date WHERE date = EXTRACT(YEAR FROM CURRENT_DATE) - 1) d
+                LEFT JOIN fact_accidents f
+                  ON f.country_id = c.country_id AND f.date_id = (SELECT date_id FROM dim_date WHERE date = d.year)
+                GROUP BY c.country_name, d.date
+                HAVING COUNT(f.fatality) = 0
+                ORDER BY c.country_name
+                LIMIT 10
+            """,
+            "file": "countries_zero_fatalities_last_year"
+        },
+        # 8. Fatalities trend by top 5 countries (last 5 years)
+        {
+            "title": "Fatalities trend by top 5 countries last 5 years",
+            "sql": """
+                WITH top_countries AS (
+                    SELECT c.country_id
+                    FROM fact_accidents f
+                    JOIN dim_country c ON f.country_id = c.country_id
+                    JOIN dim_date d ON f.date_id = d.date_id
+                    WHERE d.date >= EXTRACT(YEAR FROM CURRENT_DATE) - 5
+                    GROUP BY c.country_id
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 5
+                )
+                SELECT d.date AS year, c.country_name, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                WHERE c.country_id IN (SELECT country_id FROM top_countries)
+                GROUP BY d.date, c.country_name
+                ORDER BY d.date, c.country_name
+                LIMIT 10
+            """,
+            "file": "fatalities_trend_top5_countries"
+        },
+        # 9. Fatalities per country per month (last year, top 10 records)
+        {
+            "title": "Fatalities per country per month last year",
+            "sql": """
+                SELECT c.country_name, d.date AS year, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                WHERE d.date = EXTRACT(YEAR FROM CURRENT_DATE) - 1
+                GROUP BY c.country_name, d.date
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "file": "fatalities_per_country_last_year"
+        }
+    ]
+
+    # Execute all queries
+    for q in queries:
+        df = pd.read_sql(q["sql"], conn)
+        print_section(q["title"], df)
+        save_df_to_file(df, q["file"])
+
+    conn.close()
+    print("All analytics validation queries executed successfully.")
+
+
