@@ -44,12 +44,12 @@ for var in required_vars:
 # -------------------------------
 DB_CONFIG = {
     # Connection
-    "host": os.getenv("DATA_POSTGRES_HOST", "postgres"),  # Docker service name
-    "port": int(os.getenv("DATA_POSTGRES_PORT", 5432)),
-    "database": os.getenv("DATA_POSTGRES_DB"),
-    "dbname": os.getenv("DATA_POSTGRES_DB"),              # for psycopg2 compatibility
-    "user": os.getenv("DATA_POSTGRES_USER"),
-    "password": os.getenv("DATA_POSTGRES_PASSWORD"),
+    "host": "postgres",
+    "port": "5432",
+    "database": "data_db",
+    "dbname": "data_db",
+    "user": "data_user",
+    "password": "root"
 
     # Tables
     "ariadb_table": "ariadb",
@@ -1716,6 +1716,7 @@ def full_test_star_schema(*args, **kwargs):
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
 # Run predefined analytics validation queries and save outputs.
 #= =========================================================================================================
+
 def run_analytics_validation():
     conn = pg_connect()
     # --- DEBUG + SAFETY BLOCK (add this BEFORE running analytics queries) ---
