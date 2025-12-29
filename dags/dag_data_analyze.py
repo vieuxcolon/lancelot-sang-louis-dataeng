@@ -45,38 +45,38 @@ with DAG(
     tags=["analyze"]
 ) as dag:
 
-    # =======================
+    # --------------------------
     # Star Schema Build TaskGroup
-    # =======================
+    # --------------------------
     with TaskGroup("star_schema_build") as star_schema_group:
 
         t_drop_dimensions = PythonOperator(
-            task_id="drop_dimensions",
+            task_id="t_drop_dimensions",
             python_callable=log_and_count(drop_dimensions, "Drop Dimensions")
         )
 
         t_drop_fact = PythonOperator(
-            task_id="drop_fact",
+            task_id="t_drop_fact",
             python_callable=log_and_count(drop_fact, "Drop Fact Table")
         )
 
         t_create_dimensions = PythonOperator(
-            task_id="create_dimensions",
+            task_id="t_create_dimensions",
             python_callable=log_and_count(create_dimensions, "Create Dimension Tables")
         )
 
         t_populate_dimensions = PythonOperator(
-            task_id="populate_dimensions",
+            task_id="t_populate_dimensions",
             python_callable=log_and_count(populate_dimensions, "Populate Dimension Tables")
         )
 
         t_create_fact = PythonOperator(
-            task_id="create_fact",
+            task_id="t_create_fact",
             python_callable=log_and_count(create_fact, "Create Fact Table")
         )
 
         t_populate_fact = PythonOperator(
-            task_id="populate_fact",
+            task_id="t_populate_fact",
             python_callable=log_and_count(populate_fact, "Populate Fact Table", table_name="fact_accidents")
         )
 
@@ -85,31 +85,31 @@ with DAG(
         t_drop_fact >> t_create_dimensions >> t_populate_dimensions
         t_populate_dimensions >> t_create_fact >> t_populate_fact
 
-    # =======================
+    # --------------------------
     # Star Schema Tests
-    # =======================
+    # --------------------------
     t_min_test = PythonOperator(
-        task_id="min_test_star_schema",
+        task_id="t_min_test_star_schema",
         python_callable=log_and_count(min_test_star_schema, "Minimal Star Schema Test")
     )
 
     t_full_test = PythonOperator(
-        task_id="full_test_star_schema",
+        task_id="t_full_test_star_schema",
         python_callable=log_and_count(full_test_star_schema, "Full Star Schema Test")
     )
 
-    # =======================
+    # --------------------------
     # Trigger downstream DAG
-    # =======================
-    trigger_validation = TriggerDagRunOperator(
-        task_id="trigger_data_analytics_validation",
+    # --------------------------
+    t_trigger_validation = TriggerDagRunOperator(
+        task_id="t_trigger_data_analytics_validation",
         trigger_dag_id="dag_data_analytics_validation",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
     )
 
-    # =======================
+    # --------------------------
     # DAG Execution Order
-    # =======================
-    star_schema_group >> t_min_test >> t_full_test >> trigger_validation
+    # --------------------------
+    star_schema_group >> t_min_test >> t_full_test >> t_trigger_validation
