@@ -99,4 +99,4 @@ with DAG(
     # --------------------------
     # DAG Execution Order
     # --------------------------
-    star_schema_group >> t_min_test >> t_full_test >> t_trigger_validation
+    # star_schema_group >> t_min_test >> t_full_test >> t_trigger_validation
