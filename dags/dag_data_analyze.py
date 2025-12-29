@@ -1,22 +1,9 @@
-"""
-========================================================================
-DAG: dag_data_analyze
-========================================================================
-
-Purpose:
-    Performs deterministic ETL for star schema:
-    1. Drop existing dimension and fact tables
-    2. Create and populate dimension tables
-    3. Create and populate fact table
-    4. Run minimal and full star schema tests
-    5. Trigger downstream analytics validation DAG
-
-Features:
-    - TaskGroup "star_schema_build" collapses schema-building tasks
-    - All helper functions in etl_utils accept *args, **kwargs
-    - Deterministic: rebuilds tables from fixed prep datasets
-========================================================================
-"""
+# =================== dag_data_analyze.py ===============================================================================================================
+# DAG responsible for Performs deterministic ETL for star schema: Drop existing dimension and fact tables, Create and populate dimension tables, Create 
+# and populate fact table run minimal and full star schema tests, Trigger downstream analytics validation DAG. Features: TaskGroup "star_schema_build" 
+# collapses schema-building tasks, deterministic: rebuilds dimensions and fact tables from fixed prep tables
+# It uses utility functions defined in etl_utils.py to perform its tasks.
+# =====================================================================================================================================================
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
