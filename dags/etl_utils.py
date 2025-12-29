@@ -49,7 +49,7 @@ DB_CONFIG = {
     "database": "data_db",
     "dbname": "data_db",
     "user": "data_user",
-    "password": "root"
+    "password": "root",
 
     # Tables
     "ariadb_table": "ariadb",
