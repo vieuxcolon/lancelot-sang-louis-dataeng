@@ -1718,43 +1718,46 @@ def full_test_star_schema(*args, **kwargs):
 #= =========================================================================================================
 
 def run_analytics_validation():
+
+    # 1️⃣ Open DB connection
     conn = pg_connect()
-    # --- DEBUG + SAFETY BLOCK (add this BEFORE running analytics queries) ---
 
-    identity_df = pd.read_sql(
-        """
-        SELECT
-            current_user,
-            session_user,
-            current_database(),
-            current_schema();
-        """,
-        conn
-    )
+    try:
+        # 2️⃣ Log database connection identity
+        identity_df = pd.read_sql(
+            """
+            SELECT
+                current_user,
+                session_user,
+                current_database(),
+                current_schema();
+            """,
+            conn
+        )
+        print("🔍 Database connection identity:")
+        print(identity_df.to_string(index=False))
 
-    print("🔍 Database connection identity:")
-    print(identity_df.to_string(index=False))
+        # 3️⃣ Force schema visibility safely
+        cur = conn.cursor()
+        cur.execute("SET search_path TO public;")
+        cur.close()
 
-    # Force schema visibility (prevents "relation does not exist")
-    pd.read_sql("SET search_path TO public;", conn)
-
-    # Validate dim_date visibility before analytics
-    dim_check = pd.read_sql(
-        """
-        SELECT COUNT(*) AS row_count
-        FROM public.dim_date;
-        """,
-        conn
-    )
-
-    if dim_check.loc[0, "row_count"] == 0:
-        raise RuntimeError(
-            "❌ dim_date is visible but empty — analytics validation aborted."
+        # 4️⃣ Validate dim_date exists and has data
+        dim_check = pd.read_sql(
+            "SELECT COUNT(*) AS row_count FROM public.dim_date;",
+            conn
         )
 
-    print("✅ dim_date table is visible and populated. Proceeding with analytics.")
+        if dim_check.loc[0, "row_count"] == 0:
+            raise RuntimeError(
+                "❌ dim_date is visible but empty — analytics validation aborted."
+            )
 
-    queries = {
+        print("✅ dim_date table is visible and populated. Proceeding with analytics.")
+
+        # 5️⃣ Define analytics queries
+
+        queries = {
             "1_fatalities_by_year": """
                 SELECT d.date AS year, COUNT(*) AS total_fatalities
                 FROM fact_accidents f
@@ -1778,12 +1781,12 @@ def run_analytics_validation():
             """,
             "4_france_vs_usa_last_10_years": """
                 SELECT d.date AS year,
-                    SUM(CASE WHEN c.country_name='FRANCE' THEN 1 ELSE 0 END) AS france,
-                    SUM(CASE WHEN c.country_name='USA' THEN 1 ELSE 0 END) AS usa
+                        SUM(CASE WHEN c.country_name='FRANCE' THEN 1 ELSE 0 END) AS france,
+                        SUM(CASE WHEN c.country_name='USA' THEN 1 ELSE 0 END) AS usa
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
-                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                WHERE d.date >= EXTRACT(YEAR FROM CURRENT_DATE)-10
                 GROUP BY d.date
                 ORDER BY d.date
             """,
@@ -1821,7 +1824,7 @@ def run_analytics_validation():
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
-                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                WHERE d.date >= EXTRACT(YEAR FROM CURRENT_DATE)-10
                 GROUP BY c.country_name
                 ORDER BY total_fatalities DESC
                 LIMIT 10
@@ -1832,21 +1835,27 @@ def run_analytics_validation():
                 JOIN dim_industry i ON f.industry_id = i.industry_id
                 JOIN dim_date d ON f.date_id = d.date_id
                 JOIN dim_country c ON f.country_id = c.country_id
-                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                WHERE d.date >= EXTRACT(YEAR FROM CURRENT_DATE)-10
                 GROUP BY d.date, i.industry_code
                 ORDER BY d.date, total_fatalities DESC
                 LIMIT 10
             """
         }
 
-    for name, query in queries.items():
-        df = pd.read_sql(query, conn)
-        file_path = os.path.join(DATA_DIR, f"{name}.txt")
-        with open(file_path, "w") as f:
-            f.write(df.to_string(index=False))
-        print(f"✔ Saved query '{name}' to {file_path}")
+        # 6️⃣ Execute analytics queries and save results
+        for name, query in queries.items():
+            df = pd.read_sql(query, conn)
+            file_path = os.path.join(DATA_DIR, f"{name}.txt")
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(file_path, "w") as f:
+                f.write(df.to_string(index=False))
+            print(f"✔ Saved query '{name}' to {file_path}")
 
-    conn.close()
-    print("All analytics validation queries executed successfully.")
+        print("All analytics validation queries executed successfully.")
+
+    finally:
+        # 7️⃣ Close connection safely
+        conn.close()
+
 
 
