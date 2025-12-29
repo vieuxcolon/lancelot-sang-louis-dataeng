@@ -48,4 +48,4 @@ with DAG(
         failed_states=["failed"]
     )
 
-    chain([t_clean_ariadb, t_clean_workaccidents, t_clean_fatalities], t_trigger_prep)
+    [t_clean_ariadb, t_clean_workaccidents, t_clean_workaccidents] >> t_trigger_prep
