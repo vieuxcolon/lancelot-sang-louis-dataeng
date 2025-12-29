@@ -41,7 +41,7 @@ with DAG(
 
     t_trigger_analyze = TriggerDagRunOperator(
         task_id="t_trigger_data_analyze",
-        trigger_dag_id="dag_data_banalyze",
+        trigger_dag_id="dag_data_analyze",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
