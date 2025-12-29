@@ -1670,46 +1670,108 @@ def min_test_star_schema(*args, **kwargs):
 # Full test of star schema functions with joins to all dimensions.
 #  =========================================================================================================
 
-def full_test_star_schema(*args, **kwargs):
+def run_analytics_validation():
     """
-    Select top 20 rows from fact_accidents with joins to all dimensions.
-    Updated for current schema: country_id instead of location_id, dim_country instead of dim_location.
+    Run all predefined analytics validation queries and save outputs to DATA_DIR as text files.
+    Each query touches dim_date, dim_country, and fatalities.
     """
+    os.makedirs(DATA_DIR, exist_ok=True)
     conn = pg_connect()
-    query = """
-    SELECT 
-        f.date_id, d.date,
-        f.country_id, c.country_name,
-        f.employer_id, e.employer AS employer_name,
-        f.hazard_id, h.hazard_class AS hazard_name,
-        f.accident_type_id, a.accident_type AS accident_type_name,
-        f.industry_id, i.industry_code AS industry_name,
-        f.fatality
-    FROM fact_accidents f
-    LEFT JOIN dim_date d ON f.date_id = d.date_id
-    LEFT JOIN dim_country c ON f.country_id = c.country_id
-    LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
-    LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
-    LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-    LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
-    LIMIT 20;
-    """
-    df_test = pd.read_sql(query, conn)
+
+    queries = {
+        "1_fatalities_by_year": """
+            SELECT d.date AS year, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_date d ON f.date_id = d.date_id
+            GROUP BY d.date
+            ORDER BY d.date
+        """,
+        "2_fatalities_by_country": """
+            SELECT c.country_name AS country, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_country c ON f.country_id = c.country_id
+            GROUP BY c.country_name
+            ORDER BY total_fatalities DESC
+        """,
+        "3_fatalities_by_industry": """
+            SELECT i.industry_code AS industry, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_industry i ON f.industry_id = i.industry_id
+            GROUP BY i.industry_code
+            ORDER BY total_fatalities DESC
+        """,
+        "4_france_vs_usa_last_10_years": """
+            SELECT d.date AS year,
+                   SUM(CASE WHEN c.country_name='FRANCE' THEN 1 ELSE 0 END) AS france,
+                   SUM(CASE WHEN c.country_name='USA' THEN 1 ELSE 0 END) AS usa
+            FROM fact_accidents f
+            JOIN dim_country c ON f.country_id = c.country_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+            GROUP BY d.date
+            ORDER BY d.date
+        """,
+        "5_top_10_countries_fatalities": """
+            SELECT c.country_name, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_country c ON f.country_id = c.country_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            GROUP BY c.country_name
+            ORDER BY total_fatalities DESC
+            LIMIT 10
+        """,
+        "6_top_10_industries_fatalities": """
+            SELECT i.industry_code, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_industry i ON f.industry_id = i.industry_id
+            JOIN dim_country c ON f.country_id = c.country_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            GROUP BY i.industry_code
+            ORDER BY total_fatalities DESC
+            LIMIT 10
+        """,
+        "7_top_10_employers_fatalities": """
+            SELECT e.employer, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_employer e ON f.employer_id = e.employer_id
+            JOIN dim_country c ON f.country_id = c.country_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            GROUP BY e.employer
+            ORDER BY total_fatalities DESC
+            LIMIT 10
+        """,
+        "8_recent_10_year_fatalities_by_country": """
+            SELECT c.country_name, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_country c ON f.country_id = c.country_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+            GROUP BY c.country_name
+            ORDER BY total_fatalities DESC
+            LIMIT 10
+        """,
+        "9_fatalities_trend_by_industry_last_10_years": """
+            SELECT d.date AS year, i.industry_code, COUNT(*) AS total_fatalities
+            FROM fact_accidents f
+            JOIN dim_industry i ON f.industry_id = i.industry_id
+            JOIN dim_date d ON f.date_id = d.date_id
+            JOIN dim_country c ON f.country_id = c.country_id
+            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+            GROUP BY d.date, i.industry_code
+            ORDER BY d.date, total_fatalities DESC
+            LIMIT 10
+        """
+    }
+
+    for name, query in queries.items():
+        df = pd.read_sql(query, conn)
+        file_path = os.path.join(DATA_DIR, f"{name}.txt")
+        with open(file_path, "w") as f:
+            f.write(df.to_string(index=False))
+        print(f"✔ Saved query '{name}' to {file_path}")
+
     conn.close()
-
-    print(" full_test_star_schema query returned:")
-    print(df_test.head(20))
-    print(f"Total rows returned: {len(df_test)}")
-
-    # Debug: data types and ranges
-    print("\n Data types:")
-    print(df_test.dtypes)
-    print("\n Numeric ranges for IDs and fatality:")
-    for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'fatality']:
-        if col in df_test.columns:
-            print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
-
-    return df_test
+    print("All analytics validation queries executed successfully.")
 
 # ==========================================================================================================
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
@@ -1814,7 +1876,7 @@ def run_analytics_validation():
         file_path = os.path.join(DATA_DIR, f"{name}.txt")
         with open(file_path, "w") as f:
             f.write(df.to_string(index=False))
-        print(f"✔ Saved query '{name}' to {file_path}")
+        print(f" Saved query '{name}' to {file_path}")
 
     conn.close()
     print("All analytics validation queries executed successfully.")
