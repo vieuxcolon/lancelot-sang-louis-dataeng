@@ -1716,99 +1716,127 @@ def full_test_star_schema(*args, **kwargs):
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
 # Run predefined analytics validation queries and save outputs.
 #= =========================================================================================================
-
 def run_analytics_validation():
-    """
-    Run all predefined analytics validation queries and save outputs to DATA_DIR as text files.
-    Each query touches dim_date, dim_country, and fatalities.
-    """
-    os.makedirs(DATA_DIR, exist_ok=True)
     conn = pg_connect()
+    # --- DEBUG + SAFETY BLOCK (add this BEFORE running analytics queries) ---
+
+    identity_df = pd.read_sql(
+        """
+        SELECT
+            current_user,
+            session_user,
+            current_database(),
+            current_schema();
+        """,
+        conn
+    )
+
+    print("🔍 Database connection identity:")
+    print(identity_df.to_string(index=False))
+
+    # Force schema visibility (prevents "relation does not exist")
+    pd.read_sql("SET search_path TO public;", conn)
+
+    # Validate dim_date visibility before analytics
+    dim_check = pd.read_sql(
+        """
+        SELECT COUNT(*) AS row_count
+        FROM public.dim_date;
+        """,
+        conn
+    )
+
+    if dim_check.loc[0, "row_count"] == 0:
+        raise RuntimeError(
+            "❌ dim_date is visible but empty — analytics validation aborted."
+        )
+
+    print("✅ dim_date table is visible and populated. Proceeding with analytics.")
 
     queries = {
-        "1_fatalities_by_year": """
-            SELECT d.date AS year, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_date d ON f.date_id = d.date_id
-            GROUP BY d.date
-            ORDER BY d.date
-        """,
-        "2_fatalities_by_country": """
-            SELECT c.country_name AS country, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_country c ON f.country_id = c.country_id
-            GROUP BY c.country_name
-            ORDER BY total_fatalities DESC
-        """,
-        "3_fatalities_by_industry": """
-            SELECT i.industry_code AS industry, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_industry i ON f.industry_id = i.industry_id
-            GROUP BY i.industry_code
-            ORDER BY total_fatalities DESC
-        """,
-        "4_france_vs_usa_last_10_years": """
-            SELECT d.date AS year,
-                   SUM(CASE WHEN c.country_name='FRANCE' THEN 1 ELSE 0 END) AS france,
-                   SUM(CASE WHEN c.country_name='USA' THEN 1 ELSE 0 END) AS usa
-            FROM fact_accidents f
-            JOIN dim_country c ON f.country_id = c.country_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
-            GROUP BY d.date
-            ORDER BY d.date
-        """,
-        "5_top_10_countries_fatalities": """
-            SELECT c.country_name, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_country c ON f.country_id = c.country_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            GROUP BY c.country_name
-            ORDER BY total_fatalities DESC
-            LIMIT 10
-        """,
-        "6_top_10_industries_fatalities": """
-            SELECT i.industry_code, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_industry i ON f.industry_id = i.industry_id
-            JOIN dim_country c ON f.country_id = c.country_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            GROUP BY i.industry_code
-            ORDER BY total_fatalities DESC
-            LIMIT 10
-        """,
-        "7_top_10_employers_fatalities": """
-            SELECT e.employer, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_employer e ON f.employer_id = e.employer_id
-            JOIN dim_country c ON f.country_id = c.country_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            GROUP BY e.employer
-            ORDER BY total_fatalities DESC
-            LIMIT 10
-        """,
-        "8_recent_10_year_fatalities_by_country": """
-            SELECT c.country_name, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_country c ON f.country_id = c.country_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
-            GROUP BY c.country_name
-            ORDER BY total_fatalities DESC
-            LIMIT 10
-        """,
-        "9_fatalities_trend_by_industry_last_10_years": """
-            SELECT d.date AS year, i.industry_code, COUNT(*) AS total_fatalities
-            FROM fact_accidents f
-            JOIN dim_industry i ON f.industry_id = i.industry_id
-            JOIN dim_date d ON f.date_id = d.date_id
-            JOIN dim_country c ON f.country_id = c.country_id
-            WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
-            GROUP BY d.date, i.industry_code
-            ORDER BY d.date, total_fatalities DESC
-            LIMIT 10
-        """
-    }
+            "1_fatalities_by_year": """
+                SELECT d.date AS year, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_date d ON f.date_id = d.date_id
+                GROUP BY d.date
+                ORDER BY d.date
+            """,
+            "2_fatalities_by_country": """
+                SELECT c.country_name AS country, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                GROUP BY c.country_name
+                ORDER BY total_fatalities DESC
+            """,
+            "3_fatalities_by_industry": """
+                SELECT i.industry_code AS industry, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_industry i ON f.industry_id = i.industry_id
+                GROUP BY i.industry_code
+                ORDER BY total_fatalities DESC
+            """,
+            "4_france_vs_usa_last_10_years": """
+                SELECT d.date AS year,
+                    SUM(CASE WHEN c.country_name='FRANCE' THEN 1 ELSE 0 END) AS france,
+                    SUM(CASE WHEN c.country_name='USA' THEN 1 ELSE 0 END) AS usa
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                GROUP BY d.date
+                ORDER BY d.date
+            """,
+            "5_top_10_countries_fatalities": """
+                SELECT c.country_name, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                GROUP BY c.country_name
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "6_top_10_industries_fatalities": """
+                SELECT i.industry_code, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_industry i ON f.industry_id = i.industry_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                GROUP BY i.industry_code
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "7_top_10_employers_fatalities": """
+                SELECT e.employer, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_employer e ON f.employer_id = e.employer_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                GROUP BY e.employer
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "8_recent_10_year_fatalities_by_country": """
+                SELECT c.country_name, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                GROUP BY c.country_name
+                ORDER BY total_fatalities DESC
+                LIMIT 10
+            """,
+            "9_fatalities_trend_by_industry_last_10_years": """
+                SELECT d.date AS year, i.industry_code, COUNT(*) AS total_fatalities
+                FROM fact_accidents f
+                JOIN dim_industry i ON f.industry_id = i.industry_id
+                JOIN dim_date d ON f.date_id = d.date_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                WHERE d.date >= CURRENT_DATE - INTERVAL '10 years'
+                GROUP BY d.date, i.industry_code
+                ORDER BY d.date, total_fatalities DESC
+                LIMIT 10
+            """
+        }
 
     for name, query in queries.items():
         df = pd.read_sql(query, conn)
@@ -1819,3 +1847,5 @@ def run_analytics_validation():
 
     conn.close()
     print("All analytics validation queries executed successfully.")
+
+
