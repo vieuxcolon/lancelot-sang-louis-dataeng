@@ -18,29 +18,16 @@ from etl_utils import (
 )
 
 def task_download_ariadb():
-    """
-    Download ARIADB CSV via MongoDB flow and save to fixed CSV path ($DATA_DIR/ariadb.csv).
-    Uses batch inserts to avoid memory issues.
-    """
-    from etl_utils import download_ariadb_via_mongo, CSV_URL  # import CSV_URL here
-
     print(f"[INFO] Downloading ARIADB to {os.path.join(DATA_DIR, 'ariadb.csv')} via MongoDB")
     download_ariadb_via_mongo(CSV_URL, batch_size=5000)
     print(f"✔ ARIADB CSV ready at {os.path.join(DATA_DIR, 'ariadb.csv')}")
 
-
 def task_download_fatalities():
-    """
-    Download all fatalities files into landing zone
-    """
     files = download_all_fatalities()
     for f in files:
         print(f"✔ Fatalities file downloaded: {f}")
 
 def task_download_workaccidents():
-    """
-    Download and extract Workaccidents ZIP file to landing zone
-    """
     csv_path = download_and_extract_zip()
     print(f"✔ Workaccidents CSV downloaded/extracted to {csv_path}")
 
@@ -52,16 +39,14 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    # Parallel download tasks
-    t1_ariadb = PythonOperator(task_id="download_ariadb", python_callable=task_download_ariadb)
-    t2_fatalities = PythonOperator(task_id="download_fatalities", python_callable=task_download_fatalities)
-    t3_workaccidents = PythonOperator(task_id="download_workaccidents", python_callable=task_download_workaccidents)
+    t_download_ariadb = PythonOperator(task_id="t_download_ariadb", python_callable=task_download_ariadb)
+    t_download_fatalities = PythonOperator(task_id="t_download_fatalities", python_callable=task_download_fatalities)
+    t_download_workaccidents = PythonOperator(task_id="t_download_workaccidents", python_callable=task_download_workaccidents)
 
-    # Trigger cleaning DAG after all downloads are complete
-    trigger_clean = TriggerDagRunOperator(
-        task_id="trigger_data_clean",
+    t_trigger_clean = TriggerDagRunOperator(
+        task_id="t_trigger_data_clean",
         trigger_dag_id="dag_data_clean",
         wait_for_completion=True
     )
 
-    [t1_ariadb, t2_fatalities, t3_workaccidents] >> trigger_clean
+    [t_download_ariadb, t_download_fatalities, t_download_workaccidents] >> t_trigger_clean
