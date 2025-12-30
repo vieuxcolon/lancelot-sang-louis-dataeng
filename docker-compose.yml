@@ -3,6 +3,8 @@
 ##############################
 x-airflow-common: &airflow-common
   build: .
+  env_file:
+    - ./.env
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: airflow.providers.celery.executors.celery_executor.CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -34,6 +36,7 @@ x-airflow-common: &airflow-common
 ##############################
 # SERVICES
 ##############################
+
 services:
   ##############################
   # PostgreSQL
@@ -41,15 +44,13 @@ services:
   postgres:
     image: postgres:16
     container_name: postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+    env_file:
+      - ./.env                  # <-- Load same .env for Postgres
     ports:
       - "5432:5432"
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-      - ./init-druid.sql:/docker-entrypoint-initdb.d/init-druid.sql:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro  # <- mount all init scripts
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -83,9 +84,8 @@ services:
   mongo:
     image: mongo:7
     container_name: mongo
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    env_file:
+      - ./.env
     ports:
       - "${MONGO_PORT1}:27017"
       - "${MONGO_PORT2}:27018"
@@ -110,7 +110,7 @@ services:
       ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_PORT: "${ME_CONFIG_MONGODB_PORT}"
     ports:
-      - "${ME_PORT}:8081"
+      - "${ME_PORT}:8085"
     depends_on:
       - mongo
     restart: always
@@ -134,21 +134,15 @@ services:
   druid-coordinator:
     image: apache/druid:28.0.0
     container_name: druid-coordinator
-    environment:
-      druid_xms: ${druid_xms}
-      druid_xmx: ${druid_xmx}
-      druid_metadata_storage_type: ${druid_metadata_storage_type}
-      druid_metadata_storage_connector_connectURI: ${druid_metadata_storage_connector_connectURI}
-      druid_metadata_storage_connector_user: ${druid_metadata_storage_connector_user}
-      druid_metadata_storage_connector_password: ${druid_metadata_storage_connector_password}
-      druid_extensions_loadList: '["postgresql-metadata-storage"]'
+    env_file:
+      - ./.env
     ports:
       - "${DRUID_COORDINATOR_PORT}:8081"
     depends_on:
       - zookeeper
       - postgres
     volumes:
-      - druid-data-new:/opt/druid/var
+      - druid-data:/opt/druid/var
     command: coordinator
     restart: unless-stopped
     networks:
@@ -157,9 +151,8 @@ services:
   druid-broker:
     image: apache/druid:28.0.0
     container_name: druid-broker
-    environment:
-      druid_xms: ${druid_xms}
-      druid_xmx: ${druid_xmx}
+    env_file:
+      - ./.env
     ports:
       - "${DRUID_BROKER_PORT}:8082"
     depends_on:
@@ -172,9 +165,8 @@ services:
   druid-historical:
     image: apache/druid:28.0.0
     container_name: druid-historical
-    environment:
-      druid_xms: ${druid_xms}
-      druid_xmx: ${druid_xmx}
+    env_file:
+      - ./.env
     ports:
       - "${DRUID_HISTORICAL_PORT}:8083"
     depends_on:
@@ -187,9 +179,8 @@ services:
   druid-middlemanager:
     image: apache/druid:28.0.0
     container_name: druid-middlemanager
-    environment:
-      druid_xms: ${druid_xms}
-      druid_xmx: ${druid_xmx}
+    env_file:
+      - ./.env
     ports:
       - "${DRUID_MIDDLEMANAGER_PORT}:8091"
     depends_on:
@@ -202,9 +193,8 @@ services:
   druid-router:
     image: apache/druid:28.0.0
     container_name: druid-router
-    environment:
-      druid_xms: ${druid_xms}
-      druid_xmx: ${druid_xmx}
+    env_file:
+      - ./.env
     ports:
       - "${DRUID_ROUTER_PORT}:8888"
     depends_on:
@@ -219,6 +209,7 @@ services:
   ##############################
   airflow-apiserver:
     <<: *airflow-common
+    container_name: airflow-apiserver
     command: api-server
     ports:
       - "8080:8080"
@@ -235,6 +226,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
+    container_name: airflow-scheduler
     command: scheduler
     restart: always
     depends_on:
@@ -243,6 +235,7 @@ services:
 
   airflow-dag-processor:
     <<: *airflow-common
+    container_name: airflow-dag-processor
     command: dag-processor
     restart: always
     depends_on:
@@ -251,6 +244,7 @@ services:
 
   airflow-worker:
     <<: *airflow-common
+    container_name: airflow-worker
     command: celery worker
     environment:
       <<: *airflow-common-env
@@ -264,6 +258,7 @@ services:
 
   airflow-triggerer:
     <<: *airflow-common
+    container_name: airflow-triggerer
     command: triggerer
     restart: always
     depends_on:
@@ -272,6 +267,7 @@ services:
 
   airflow-init:
     <<: *airflow-common
+    container_name: airflow-init
     entrypoint: /bin/bash
     command:
       - -c
@@ -302,9 +298,8 @@ services:
   pgadmin:
     image: elestio/pgadmin
     container_name: pgadmin_airflow
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    env_file:
+      - ./.env
     ports:
       - "${PGADMIN_PORT}:80"
     networks:
@@ -319,6 +314,10 @@ networks:
 
 volumes:
   postgres-db-volume:
+    name: postgres-db-volume
   mongo-data:
+    name: mongo-data
   mongo-config:
-  druid-data-new:
+    name: mongo-config
+  druid-data:
+    name: druid-data
