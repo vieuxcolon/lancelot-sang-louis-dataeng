@@ -1776,72 +1776,62 @@ def min_test_star_schema(*args, **kwargs):
 
     return df_test
 
-import time
-import pandas as pd
-from etl_utils import pg_connect
 
-def full_test_star_schema(max_retries=3, delay_seconds=5, *args, **kwargs):
+def full_test_star_schema(*args, **kwargs):
     """
     Select top 20 rows from fact_accidents with joins to all dimensions.
-    Retries up to `max_retries` times if database temporary errors occur.
-    Uses current fact_accidents and dimension tables.
+    Ensures that all dimension references exist and the schema is correct.
     """
-    attempt = 0
-    while attempt < max_retries:
-        attempt += 1
-        try:
-            conn = pg_connect()
-            query = """
-                SELECT 
-                    f.date_id, d.date,
-                    f.country_id, c.country_name,
-                    f.employer_id, e.employer AS employer_name,
-                    f.hazard_id, h.hazard_class AS hazard_name,
-                    f.accident_type_id, a.accident_type AS accident_type_name,
-                    f.industry_id, i.industry_code AS industry_name,
-                    f.no_of_fatality
-                FROM fact_accidents f
-                LEFT JOIN dim_date d ON f.date_id = d.date_id
-                LEFT JOIN dim_country c ON f.country_id = c.country_id
-                LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
-                LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
-                LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
-                LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
-                LIMIT 20;
-            """
-            df_test = pd.read_sql(query, conn)
-            conn.close()
 
-            print("✔ full_test_star_schema query returned:")
-            print(df_test.head(20))
-            print(f"Total rows returned: {len(df_test)}")
+    import pandas as pd
+    from etl_utils import pg_connect  # Assuming pg_connect is defined in etl_utils
 
-            # Debug: data types and numeric ranges
-            print("\nData types:")
-            print(df_test.dtypes)
-            print("\nNumeric ranges for IDs and no_of_fatality:")
-            for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'no_of_fatality']:
-                if col in df_test.columns:
-                    print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
+    conn = pg_connect()
 
-            # Success: return dataframe
-            return df_test
+    try:
+        query = """
+        SELECT 
+            f.date_id, d.date AS date_value,
+            f.country_id, c.country_name,
+            f.employer_id, e.employer AS employer_name,
+            f.hazard_id, h.hazard_class AS hazard_name,
+            f.accident_type_id, a.accident_type AS accident_type_name,
+            f.industry_id, i.industry_code AS industry_code,
+            f.no_of_fatality
+        FROM fact_accidents f
+        LEFT JOIN dim_date d ON f.date_id = d.date_id
+        LEFT JOIN dim_country c ON f.country_id = c.country_id
+        LEFT JOIN dim_employer e ON f.employer_id = e.employer_id
+        LEFT JOIN dim_hazard h ON f.hazard_id = h.hazard_id
+        LEFT JOIN dim_accident_type a ON f.accident_type_id = a.accident_type_id
+        LEFT JOIN dim_industry i ON f.industry_id = i.industry_id
+        LIMIT 20;
+        """
 
-        except Exception as e:
-            print(f"⚠ Attempt {attempt}/{max_retries} failed: {e}")
-            if attempt < max_retries:
-                print(f"⏳ Retrying in {delay_seconds} seconds...")
-                time.sleep(delay_seconds)
-            else:
-                print("❌ All retries failed. full_test_star_schema could not complete.")
-                raise
+        df_test = pd.read_sql(query, conn)
+
+        print("✔ full_test_star_schema query returned:")
+        print(df_test.head(20))
+        print(f"Total rows returned: {len(df_test)}")
+
+        # Debug: data types and ranges
+        print("\nData types:")
+        print(df_test.dtypes)
+        print("\nNumeric ranges for IDs and fatality:")
+        for col in ['date_id', 'country_id', 'industry_id', 'accident_type_id', 'hazard_id', 'employer_id', 'no_of_fatality']:
+            if col in df_test.columns:
+                print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
+
+        return df_test
+
+    finally:
+        conn.close()
+        print("✔ Connection closed")
 
 # ==========================================================================================================
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
 # Run predefined analytics validation queries and save outputs.
 #= =========================================================================================================
-
-
 
 def run_analytics_validation():
     """
