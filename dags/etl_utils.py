@@ -1076,20 +1076,20 @@ def create_ariadb_prep():
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1️⃣ Rename and convert date to string YYYY-MM-DD
+    # 1. Rename and convert date to string YYYY-MM-DD
     if "incident_date" in df.columns:
         df["date"] = pd.to_datetime(
             df["incident_date"], errors="coerce"
         ).dt.strftime("%Y-%m-%d")
         df.drop(columns=["incident_date"], inplace=True)
 
-    # 2️⃣ Normalize country
+    # 2. Normalize country
     if "country" in df.columns:
         df = normalize_country(df, "country")
     else:
         df["country"] = "UNKNOWN"
 
-    # 3️⃣ Convert IDs (IMPORTANT FIX)
+    # 3. Convert IDs (IMPORTANT FIX)
     # aria_id is numeric
     if "aria_id" in df.columns:
         df["aria_id"] = pd.to_numeric(
@@ -1105,12 +1105,12 @@ def create_ariadb_prep():
             .replace({"nan": None})
         )
 
-    # 4️⃣ Add fatality flag
+    # 4. Add fatality flag
     df["fatality"] = df.get("hazard_class", "").apply(
         lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
     )
 
-    # 5️⃣ Drop rows where all key columns are null
+    # 5. Drop rows where all key columns are null
     key_cols = [
         "aria_id",
         "date",
@@ -1123,16 +1123,16 @@ def create_ariadb_prep():
     existing_keys = [c for c in key_cols if c in df.columns]
     df = df.dropna(how="all", subset=existing_keys)
 
-    # 6️⃣ Drop rows with only PK populated
+    # 6. Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "aria_id"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 7️⃣ Deduplicate on PK
+    # 7. Deduplicate on PK
     if "aria_id" in df.columns:
         df = df.drop_duplicates(subset=["aria_id"])
 
-    # 8️⃣ Recreate prep table with correct types
+    # 8. Recreate prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
 
@@ -1150,7 +1150,7 @@ def create_ariadb_prep():
         f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});'
     )
 
-    # 9️⃣ Insert data
+    # 9. Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
@@ -1166,7 +1166,6 @@ def create_ariadb_prep():
     conn.close()
 
     print(f" Created {dst_table} ({len(df)} rows)")
-
 
     
 # ==========================================================================================================
@@ -1394,7 +1393,7 @@ def create_dimensions(*args, **kwargs):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_industry (
             industry_id SERIAL PRIMARY KEY,
-            industry_code TEXT UNIQUE
+            industry_code TEXT NOT NULL UNIQUE
         )
     """)
 
