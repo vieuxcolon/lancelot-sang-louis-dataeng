@@ -1748,7 +1748,8 @@ def populate_fact(*args, **kwargs):
 # ==========================================================================================================
 # DAG_DATA_ANALYSE FUNCTIONS:  7. min_test_star_schema
 # Minimal test of star schema functions.
-#  =========================================================================================================
+#  =========================================================
+# ================================================
 
 def min_test_star_schema(*args, **kwargs):
     """
@@ -1841,8 +1842,6 @@ def run_analytics_validation():
 
     # 1️⃣ Open DB connection
    
-    DATA_DIR = os.path.join(os.environ.get("DATA_DIR", "."), "analytics_results")
-
     conn = pg_connect()
 
     try:
@@ -1965,11 +1964,12 @@ def run_analytics_validation():
         }
 
         # 6️⃣ Execute analytics queries and save results
-        os.makedirs(DATA_DIR, exist_ok=True)
+        ANALYTICS_DATA_DIR = "/opt/airflow/data/analytics_results"
+        os.makedirs(ANALYTICS_DATA_DIR, exist_ok=True)
 
         for name, query in queries.items():
             df = pd.read_sql(query, conn)
-            file_path = os.path.join(DATA_DIR, f"{name}.txt")
+            file_path = os.path.join(ANALYTICS_DATA_DIR, f"{name}.txt")
             with open(file_path, "w") as f:
                 f.write(df.to_string(index=False))
             print(f"✔ Saved query '{name}' to {file_path}")
