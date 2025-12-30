@@ -1758,7 +1758,7 @@ def min_test_star_schema(*args, **kwargs):
     conn = pg_connect()
     query = """
         SELECT date_id, country_id, employer_id, hazard_id,
-               accident_type_id, industry_id, fatality
+               accident_type_id, industry_id, no_of_fatality AS fatality
         FROM fact_accidents
         LIMIT 5;
     """
@@ -1776,11 +1776,6 @@ def min_test_star_schema(*args, **kwargs):
 
     return df_test
 
-# ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  8. full_test_star_schema
-# Full test of star schema functions with joins to all dimensions.
-#  =========================================================================================================
-
 def full_test_star_schema(*args, **kwargs):
     """
     Select top 20 rows from fact_accidents with joins to all dimensions.
@@ -1795,7 +1790,7 @@ def full_test_star_schema(*args, **kwargs):
         f.hazard_id, h.hazard_class AS hazard_name,
         f.accident_type_id, a.accident_type AS accident_type_name,
         f.industry_id, i.industry_code AS industry_name,
-        f.fatality
+        f.no_of_fatality AS fatality
     FROM fact_accidents f
     LEFT JOIN dim_date d ON f.date_id = d.date_id
     LEFT JOIN dim_country c ON f.country_id = c.country_id
@@ -1821,7 +1816,6 @@ def full_test_star_schema(*args, **kwargs):
             print(f"{col}: min={df_test[col].min()}, max={df_test[col].max()}")
 
     return df_test
-
 
 # ==========================================================================================================
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
