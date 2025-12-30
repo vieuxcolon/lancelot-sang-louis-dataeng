@@ -1377,17 +1377,6 @@ def create_dimensions(*args, **kwargs):
     """)
 
     # ----------------------------
-    # dim_location (optional, populated later)
-    # ----------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS dim_location (
-            location_id SERIAL PRIMARY KEY,
-            country TEXT,
-            country_id INT REFERENCES dim_country(country_id)
-        )
-    """)
-
-    # ----------------------------
     # dim_industry
     # ----------------------------
     cur.execute("""
@@ -1479,7 +1468,7 @@ def populate_dimensions(*args, **kwargs):
     insert_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type", "accident_type_id")
     insert_dim([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard", "hazard_id")
     insert_dim([df_aria, df_work, df_fatal], "employer", "dim_employer", "employer_id")
-    insert_dim([df_aria, df_work, df_fatal], "location", "dim_location", "location_id")
+  
 
     # ----------------------------
     # Populate dim_date
