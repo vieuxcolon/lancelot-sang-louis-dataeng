@@ -1507,22 +1507,25 @@ def populate_dimensions(*args, **kwargs):
         df_work.get("country", pd.Series(dtype=str)),
         df_fatal.get("country", pd.Series(dtype=str))
     ]).dropna().drop_duplicates()
-
-    predefined_codes = {
-        "FRANCE": "FR","USA": "US", "GERMANY": "DE", "UK": "GB", "PAYS-BAS": "NL", "AUTRICHE": "AT", "LIBAN": "LB", "CHINE": "CN",
-        "HONGRIE": "HU", "BELGIQUE": "BE", "SUEDE": "SE", "ITALIE": "IT",  "SUISSE": "CH", "BRESIL": "BR", "DANEMARK": "DK",
-        "SENEGAL": "SN", "INDE": "IN", "FINLANDE": "FI", "BULGARIE": "BG", "POLOGNE": "PL", "CANADA": "CA", "LITUANIE": "LT",
-        "AUSTRALIE": "AU", "MEXIQUE": "MX", "ESPAGNE": "ES", "JAPON": "JP", "NOUVELLE-ZELANDE": "NZ", "PORTUGAL": "PT", "SLOVENIE": "SI",
-        "TCHEQUE (REP.)": "CZ", "UKRAINE": "UA", "BIELORUSSIE": "BY", "ROUMANIE": "RO", "SLOVAQUIE": "SK", "COREE DU SUD": "KR",
-        "JORDANIE": "JO", "OUZBEKISTAN": "UZ", "LAOS": "LA", "VENEZUELA": "VE", "CHYPRE": "CY", "GRECE": "GR", "RUSSIE": "RU",
-        "ESTONIE": "EE", "CONGO (REP.)": "CG", "SRI LANKA": "LK", "PAKISTAN": "PK", "THAILANDE": "TH", "ZIMBABWE": "ZW", "IRLANDE": "IE",
-        "AFRIQUE DU SUD": "ZA", "CUBA": "CU", "PEROU": "PE", "SIERRA LEONE": "SL", "TAIWAN": "TW", "ARABIE SAOUDITE": "SA", "ALGERIE": "DZ",
-        "TURQUIE": "TR", "LIBYE": "LY", "IRAK": "IQ", "ISRAEL": "IL", "OUGANDA": "UG", "INDONESIE": "ID", "SAINTE-LUCIE": "LC", 
-        "HAITI": "HT", "MAROC": "MA", "LUXEMBOURG": "LU", "NORVEGE": "NO", "NIGERIA": "NG", "MAURICE": "MU", "NIGER": "NE", "KENYA": "KE",
-        "ETHIOPIE": "ET", "SURINAME": "SR", "AZERBAIDJAN": "AZ", "GHANA": "GH", "KAZAKHSTAN": "KZ", "CAMEROUN": "CM", "SEYCHELLES": "SC",
-        "CHILI": "CL", "COLOMBIE": "CO", "EQUATEUR": "EC", "UNKNOWN": "XX"
-        # more countries can be added as needed
-}
+    
+    predefined_codes = {"AFGHANISTAN": "AF", "AFRIQUE DU SUD": "ZA", "ALBANIE": "AL", "ALGERIE": "DZ", "ALLEMAGNE": "DE",
+    "ANDORRE": "AD", "ANGOLA": "AO", "ARABIE SAOUDITE": "SA", "ARGENTINE": "AR", "ARMENIE": "AM", "AUSTRALIE": "AU", "AUTRE": "ZZ",
+    "AUTRICHE": "AT", "AZERBAIDJAN": "AZ", "BAHAMAS": "BS", "BANGLADESH": "BD", "BELGIQUE": "BE", "BENIN": "BJ", "BIELORUSSIE": "BY",
+    "BIRMANIE": "MM", "BOLIVIE": "BO", "BOSNIE-HERZEGOVINE": "BA", "BRESIL": "BR", "BULGARIE": "BG", "BURKINA FASO": "BF",
+    "BURUNDI": "BI", "CAMBODGE": "KH", "CAMEROUN": "CM", "CANADA": "CA", "CHILI": "CL", "CHINE": "CN", "CHYPRE": "CY", "COLOMBIE": "CO",
+    "CONGO (REP.)": "CG", "COREE DU NORD": "KP", "COREE DU SUD": "KR", "COSTA RICA": "CR", "COTE D'IVOIRE": "CI", "CROATIE": "HR",
+    "CUBA": "CU", "DANEMARK": "DK", "DJIBOUTI": "DJ", "DOMINICAINE (REP.)": "DO", "EGYPTE": "EG", "EMIRATS ARABES UN            IS": "AE", "EQUATEUR": "EC",
+    "ESPAGNE": "ES", "ESTONIE": "EE", "ETHIOPIE": "ET", "FINLANDE": "FI", "FRANCE": "FR", "GABON": "GA", "GEORGIE": "GE", "GHANA": "GH",
+    "GRECE": "GR", "GUATEMALA": "GT", "GUINEE": "GN", "GUINEE EQUATORIALE": "GQ", "GUYANA": "GY", "HAITI": "HT", "HONDURAS": "HN", "HONGRIE": "HU",
+    "ILES SALOMON": "SB", "INDE": "IN", "INDONESIE": "ID", "IRAK": "IQ", "IRAN": "IR", "IRLANDE": "IE", "ISLANDE": "IS", "ISRAEL": "IL",
+    "ITALIE": "IT", "JAMAIQUE": "JM", "JAPON": "JP", "JORDANIE": "JO", "KAZAKHSTAN": "KZ", "KENYA": "KE", "KIRGHIZSTAN": "KG", "KOWEIT": "KW", "LAOS": "LA", "LETTONIE": "LV", "LIBAN": "LB", "LIBYE": "LY",
+    "LITUANIE": "LT", "LUXEMBOURG": "LU", "MACEDOINE (EX YOUGOSLAVIE)": "MK", "MADAGASCAR": "MG", "MALAISIE": "MY", "MALTE": "MT", "MAROC": "MA", "MAURICE": "MU", "MAURITANIE": "MR", "MEXIQUE": "MX", "MONACO": "MC",
+    "MONGOLIE": "MN", "MOZAMBIQUE": "MZ", "NC": "NC", "NIGER": "NE", "NIGERIA": "NG", "NICARAGUA": "NI", "NORVEGE": "NO", "NOUVELLE-ZELANDE": "NZ", "OMAN": "OM", "OUGANDA": "UG", "OUZBEKISTAN": "UZ", "PAKISTAN": "PK", "PANAMA": "PA",
+    "PAPOUASIE-NOUVELLE-GUINEE": "PG", "PAYS-BAS": "NL", "PEROU": "PE", "PHILIPPINES": "PH", "POLOGNE": "PL", "PORTO RICO": "PR", "PORTUGAL": "PT", "QATAR": "QA", "ROUMANIE": "RO", "RUSSIE": "RU", "RWANDA": "RWANDA", "SAINTE-LUCIE": "LC",
+    "SALVADOR": "SV", "SENEGAL": "SN", "SERBIE": "RS", "SERBIE-ET-MONTENEGRO": "CS", "SEYCHELLES": "SC", "SIERRA LEONE": "SL", "SINGAPOUR": "SG", "SLOVAQUIE": "SK", "SLOVENIE": "SI", "SOUDAN": "SD", "SRI LANKA": "LK", "SUISSE": "CH",
+    "SURINAME": "SR", "SUEDE": "SE", "SYRIE": "SY", "TAIWAN": "TW", "TANZANIE": "TZ", "TCHEQUE (REP.)": "CZ", "THAILANDE": "TH", "TOGO": "TG", "TRINITE-ET-TOBAGO": "TT", "TUNISIE": "TN", "TURQUIE": "TR", "UK": "GB", "UKRAINE": "UA",
+    "UNKNOWN": "XX", "URUGUAY": "UY"}
+    
     inserted_countries = 0
     for c in all_countries:
         code = predefined_codes.get(c.upper(), "XX")
