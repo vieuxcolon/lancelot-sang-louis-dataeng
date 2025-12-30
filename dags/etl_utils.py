@@ -1605,101 +1605,136 @@ def create_fact(*args, **kwargs):
 
 def populate_fact(*args, **kwargs):
     """
-    Populates the fact_accidents table from prep tables and dimension tables.
-    Integrates dim_fatality for future-proof mapping.
-    Prep tables already have correct types, so no further conversion needed.
+    Populates fact_accidents from prep tables and dimensions.
+
+    Rules:
+    - Mandatory dimensions: date, country, fatality
+    - Optional dimensions: industry, accident_type, hazard, employer
+    - Every prep row represents exactly ONE accident/fatality
     """
+
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("Loading prep tables for fact table population...")
+    print("▶ START: Populate Fact Table")
 
-    # ----------------------------
-    # Load prep tables with source tracking
-    # ----------------------------
+    # -------------------------------------------------
+    # Load prep tables (with source tracking)
+    # -------------------------------------------------
     df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
     df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
     df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
 
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
+
     print(f"Combined prep tables: {len(df_fact)} rows")
     print("Sample prep sources distribution:")
-    print(df_fact['__source'].value_counts())
+    print(df_fact["__source"].value_counts())
 
-    # ----------------------------
-    # Standardize join columns (strings only)
-    # ----------------------------
+    # -------------------------------------------------
+    # Normalize mandatory join columns
+    # -------------------------------------------------
     df_fact["date"] = df_fact["date"].astype(str).str.strip()
     df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
 
-    # ----------------------------
-    # Load dimension tables
-    # ----------------------------
+    # -------------------------------------------------
+    # Load dimensions
+    # -------------------------------------------------
+    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
+    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
     dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
     dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
     dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
     dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
-    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
-    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
-    dim_fatality = pd.read_sql("SELECT fatality_id, no_of_fatality, fatality_label FROM dim_fatality", conn)
+    dim_fatality = pd.read_sql("SELECT fatality_id FROM dim_fatality LIMIT 1", conn)
 
+    if dim_fatality.empty:
+        raise RuntimeError("dim_fatality is empty – cannot populate fact table")
+
+    fatality_id = int(dim_fatality.iloc[0]["fatality_id"])
+
+    # Normalize dimension join keys
     dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
-    # ----------------------------
-    # Merge dimension tables
-    # ----------------------------
+    # -------------------------------------------------
+    # Merge dimensions (LEFT JOIN – optional-safe)
+    # -------------------------------------------------
     print("Merging dimension tables into prep data...")
+
+    df_fact = df_fact.merge(dim_date, how="left", on="date")
+    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
     df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
     df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
     df_fact = df_fact.merge(dim_employer, how="left", on="employer")
-    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
-    df_fact = df_fact.merge(dim_date, how="left", on="date")
-    # Merge fatality mapping
-    df_fact = df_fact.merge(dim_fatality, how="left", left_on="fatality", right_on="no_of_fatality")
-    df_fact.drop(columns=["fatality", "no_of_fatality", "fatality_label"], inplace=True)
 
-    # ----------------------------
-    # FK checks
-    # ----------------------------
-    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id", "fatality_id"]
-    missing_fk_counts = df_fact[fk_cols].isna().sum()
+    # Assign fatality_id explicitly (single-row dimension)
+    df_fact["fatality_id"] = fatality_id
+
+    # -------------------------------------------------
+    # Define mandatory vs optional foreign keys
+    # -------------------------------------------------
+    mandatory_fk_cols = ["date_id", "country_id", "fatality_id"]
+    optional_fk_cols = [
+        "industry_id",
+        "accident_type_id",
+        "hazard_id",
+        "employer_id"
+    ]
+
+    fact_cols = mandatory_fk_cols + optional_fk_cols
+
+    # -------------------------------------------------
+    # FK diagnostics
+    # -------------------------------------------------
+    missing_fk_counts = df_fact[fact_cols].isna().sum()
     print("Missing foreign keys count per column:")
     print(missing_fk_counts)
 
-    # ----------------------------
-    # Duplicate check
-    # ----------------------------
-    duplicate_count = df_fact.duplicated(subset=fk_cols).sum()
-    print(f"Total duplicates (FKs): {duplicate_count}")
+    # -------------------------------------------------
+    # Drop rows missing ONLY mandatory FKs
+    # -------------------------------------------------
+    df_fact_final = df_fact[fact_cols].dropna(subset=mandatory_fk_cols)
 
-    # ----------------------------
-    # Prepare final fact table (already correctly typed)
-    # ----------------------------
-    df_fact_final = df_fact[fk_cols].copy()
+    print(
+        f"Rows prepared for insert after dropping missing mandatory FKs: "
+        f"{len(df_fact_final)}"
+    )
 
-    # ----------------------------
-    # Drop rows with missing FKs
-    # ----------------------------
-    df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
-    print(f"Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
+    if df_fact_final.empty:
+        print("⚠️ No rows eligible for insertion into fact_accidents")
+        conn.close()
+        return
 
-    # ----------------------------
-    # Bulk insert using execute_values
-    # ----------------------------
-    rows_to_insert = [tuple(x) for x in df_fact_final_clean.to_numpy()]
-    sql = """
+    # -------------------------------------------------
+    # Bulk insert
+    # -------------------------------------------------
+    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
+
+    insert_sql = """
         INSERT INTO fact_accidents (
-            date_id, country_id, industry_id, accident_type_id,
-            hazard_id, employer_id, fatality_id
+            date_id,
+            country_id,
+            fatality_id,
+            industry_id,
+            accident_type_id,
+            hazard_id,
+            employer_id
         ) VALUES %s
     """
-    psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
+
+    psycopg2.extras.execute_values(
+        cur,
+        insert_sql,
+        rows_to_insert,
+        page_size=1000
+    )
 
     conn.commit()
     conn.close()
-    print(f"Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
+
+    print(f"✔ Fact table populated successfully with {len(rows_to_insert)} rows")
 
 
 # ==========================================================================================================
