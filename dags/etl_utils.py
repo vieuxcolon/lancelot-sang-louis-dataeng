@@ -1612,39 +1612,47 @@ def create_fact(*args, **kwargs):
 
 def populate_fact(*args, **kwargs):
     """
-    Populate fact_accidents fully using dimension tables.
-    Step 0: combine prep tables
-    Step 1: full insert with optional FKs
-    Step 2: fallback insert with mandatory FKs only
+    Populate fact_accidents table from prep tables using dimension tables.
+    Step 0: dynamically unify prep tables into a CTE prep_data
+    Step 1: insert full data with optional FKs
+    Step 2: fallback: insert only mandatory FKs
     """
     conn = pg_connect()
     cur = conn.cursor()
 
+    # Define prep tables and optional columns
+    prep_tables = ["ariadb_prep", "workaccidents_prep", "fatalities_prep"]
+    optional_cols = ["industry_code", "accident_type", "hazard_class", "employer"]
+    mandatory_cols = ["date", "country", "fatality"]
+
     try:
         # ----------------------------
-        # Step 0: Union prep tables into a CTE
+        # Step 0: dynamic union CTE
         # ----------------------------
-        prep_union_sql = """
-        WITH prep_data AS (
-            SELECT date, country, fatality, industry_code, accident_type, hazard_class, employer
-            FROM workaccidents_prep
-            UNION ALL
-            SELECT date, country, fatality, industry_code, accident_type, hazard_class, employer
-            FROM ariadb_prep
-            UNION ALL
-            SELECT date, country, fatality,
-                   NULL::TEXT AS industry_code,
-                   NULL::TEXT AS accident_type,
-                   NULL::TEXT AS hazard_class,
-                   NULL::TEXT AS employer
-            FROM fatalities_prep
-        )
-        """
+        cte_parts = []
+        for table in prep_tables:
+            # Get actual columns in the table
+            cur.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{table}' 
+            """)
+            table_cols = [row[0] for row in cur.fetchall()]
+            
+            select_parts = []
+            for col in mandatory_cols + optional_cols:
+                if col in table_cols:
+                    select_parts.append(col)
+                else:
+                    select_parts.append(f"NULL AS {col}")
+            cte_parts.append(f"SELECT {', '.join(select_parts)} FROM {table}")
+
+        prep_union_sql = "WITH prep_data AS (\n" + "\nUNION ALL\n".join(cte_parts) + "\n)\n"
 
         # ----------------------------
-        # Step 0b: debug optional FKs
+        # Debug counts
         # ----------------------------
-        debug_sql = prep_union_sql + """
+        debug_sql = prep_union_sql + f"""
         SELECT
             COUNT(*) FILTER (WHERE industry_code IS NULL) AS missing_industry,
             COUNT(*) FILTER (WHERE accident_type IS NULL) AS missing_accident_type,
@@ -1663,9 +1671,9 @@ def populate_fact(*args, **kwargs):
         print(f"  total_rows: {missing_counts[4]}")
 
         # ----------------------------
-        # Step 1: Full insert with optional FKs
+        # Step 1: full insert
         # ----------------------------
-        insert_full_sql = prep_union_sql + """
+        insert_sql = prep_union_sql + """
         INSERT INTO fact_accidents (
             date_id, country_id, fatality_id,
             industry_id, accident_type_id, hazard_id, employer_id,
@@ -1679,17 +1687,24 @@ def populate_fact(*args, **kwargs):
             atype.accident_type_id,
             h.hazard_id,
             e.employer_id,
-            f.no_of_fatality
+            COALESCE(p.fatality, 1) AS no_of_fatality
         FROM prep_data p
-        JOIN dim_date d ON d.date = p.date
-        JOIN dim_country c ON c.country_name = p.country
-        JOIN dim_fatality f ON f.no_of_fatality = p.fatality
-        LEFT JOIN dim_industry i ON i.industry_code = p.industry_code
-        LEFT JOIN dim_accident_type atype ON atype.accident_type = p.accident_type
-        LEFT JOIN dim_hazard h ON h.hazard_class = p.hazard_class
-        LEFT JOIN dim_employer e ON e.employer = p.employer
+        JOIN dim_date d
+            ON d.date = p.date::date
+        JOIN dim_country c
+            ON c.country_name = p.country
+        JOIN dim_fatality f
+            ON f.no_of_fatality = 1
+        LEFT JOIN dim_industry i
+            ON i.industry_code = p.industry_code
+        LEFT JOIN dim_accident_type atype
+            ON atype.accident_type = p.accident_type
+        LEFT JOIN dim_hazard h
+            ON h.hazard_class = p.hazard_class
+        LEFT JOIN dim_employer e
+            ON e.employer = p.employer
         """
-        cur.execute(insert_full_sql)
+        cur.execute(insert_sql)
         conn.commit()
         print("✔ fact_accidents populated successfully (full)")
 
@@ -1698,7 +1713,7 @@ def populate_fact(*args, **kwargs):
         print("⚠ Full insert failed, falling back to mandatory FKs only:", e)
 
         # ----------------------------
-        # Step 2: Fallback insert with mandatory FKs only
+        # Step 2: fallback: only mandatory FKs
         # ----------------------------
         insert_mandatory_sql = prep_union_sql + """
         INSERT INTO fact_accidents (
@@ -1708,11 +1723,14 @@ def populate_fact(*args, **kwargs):
             d.date_id,
             c.country_id,
             f.fatality_id,
-            f.no_of_fatality
+            COALESCE(p.fatality, 1) AS no_of_fatality
         FROM prep_data p
-        JOIN dim_date d ON d.date = p.date
-        JOIN dim_country c ON c.country_name = p.country
-        JOIN dim_fatality f ON f.no_of_fatality = p.fatality
+        JOIN dim_date d
+            ON d.date = p.date::date
+        JOIN dim_country c
+            ON c.country_name = p.country
+        JOIN dim_fatality f
+            ON f.no_of_fatality = 1
         """
         cur.execute(insert_mandatory_sql)
         conn.commit()
