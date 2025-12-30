@@ -431,8 +431,8 @@ def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
     # ------------------------------------------------------------------------
     try:
         print("[DEBUG] Attempting UTF-8 CSV read")
-        df = pd.read_csv(url, sep=";", skiprows=7, encoding="utf-8")
-        print(f"[DEBUG] CSV loaded successfully: {len(df)} rows")
+        df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
+        print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
     except UnicodeDecodeError:
         print("[WARNING] UTF-8 failed, trying latin1")
         try:
