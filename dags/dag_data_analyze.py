@@ -1,8 +1,6 @@
 # =================== dag_data_analyze.py ===============================================================================================================
-# DAG responsible for Performs deterministic ETL for star schema: Drop existing dimension and fact tables, Create and populate dimension tables, Create 
-# and populate fact table run minimal and full star schema tests, Trigger downstream analytics validation DAG. Features: TaskGroup "star_schema_build" 
-# collapses schema-building tasks, deterministic: rebuilds dimensions and fact tables from fixed prep tables
-# It uses utility functions defined in etl_utils.py to perform its tasks.
+# DAG for deterministic ETL of star schema: drop/create/populate dimension and fact tables,
+# run minimal and full star schema tests, and trigger downstream analytics validation DAG.
 # =====================================================================================================================================================
 
 from airflow import DAG
@@ -23,6 +21,9 @@ from etl_utils import (
     log_and_count
 )
 
+# ======================
+# DAG Definition
+# ======================
 with DAG(
     dag_id="dag_data_analyze",
     start_date=datetime(2025, 1, 1),
@@ -67,7 +68,7 @@ with DAG(
             python_callable=log_and_count(populate_fact, "Populate Fact Table", table_name="fact_accidents")
         )
 
-        # Enforce strict ordering
+        # Enforce strict ordering within TaskGroup
         t_drop_dimensions >> t_drop_fact
         t_drop_fact >> t_create_dimensions >> t_populate_dimensions
         t_populate_dimensions >> t_create_fact >> t_populate_fact
@@ -99,4 +100,5 @@ with DAG(
     # --------------------------
     # DAG Execution Order
     # --------------------------
-    # star_schema_group >> t_min_test >> t_full_test >> t_trigger_validation
+    # Build Star Schema first
+    star_schema_group >> t_min_test >> t_full_test >> t_trigger_validation
