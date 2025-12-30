@@ -6,6 +6,7 @@
 
 from psycopg2.extras import execute_values
 from psycopg2.extras import execute_batch
+import psycopg2.extras
 import sys, os, io, csv, unicodedata
 import logging, traceback, warnings, datetime
 from typing import List, Dict
@@ -1618,9 +1619,6 @@ def populate_fact(*args, **kwargs):
     - Optional dimensions: industry, accident_type, hazard, employer
     - Each prep row represents exactly ONE accident/fatality
     """
-    import psycopg2.extras
-    import pandas as pd
-    from datetime import datetime
 
     conn = pg_connect()
     cur = conn.cursor()
@@ -1752,7 +1750,6 @@ def populate_fact(*args, **kwargs):
     conn.commit()
     conn.close()
     print(f"✔ Fact table populated successfully with {len(rows_to_insert)} rows")
-
 
 
 # ==========================================================================================================
