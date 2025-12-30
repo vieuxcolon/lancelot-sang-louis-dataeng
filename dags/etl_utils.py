@@ -1841,13 +1841,18 @@ def full_test_star_schema(max_retries=3, delay_seconds=5, *args, **kwargs):
 # Run predefined analytics validation queries and save outputs.
 #= =========================================================================================================
 
-import os
-import pandas as pd
-from etl_utils import pg_connect, DATA_DIR  # make sure DATA_DIR is defined
+
 
 def run_analytics_validation():
+    """
+    Run a full set of analytics queries on the current star schema.
+    Uses current dimension and fact table columns and types.
+    """
 
     # 1️⃣ Open DB connection
+   
+    DATA_DIR = os.path.join(os.environ.get("DATA_DIR", "."), "analytics_results")
+
     conn = pg_connect()
 
     try:
@@ -1872,7 +1877,7 @@ def run_analytics_validation():
 
         # 4️⃣ Validate dim_date exists and has data
         dim_check = pd.read_sql(
-            "SELECT COUNT(*) AS row_count FROM public.dim_date;",
+            "SELECT COUNT(*) AS row_count FROM dim_date;",
             conn
         )
 
@@ -1883,14 +1888,14 @@ def run_analytics_validation():
 
         print("✅ dim_date table is visible and populated. Proceeding with analytics.")
 
-        # 5️⃣ Define analytics queries with current dimension/fact structure
+        # 5️⃣ Define analytics queries
         queries = {
             "1_fatalities_by_year": """
-                SELECT EXTRACT(YEAR FROM d.date) AS year, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT d.date AS year, SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_date d ON f.date_id = d.date_id
-                GROUP BY year
-                ORDER BY year
+                GROUP BY d.date
+                ORDER BY d.date
             """,
             "2_fatalities_by_country": """
                 SELECT c.country_name AS country, SUM(f.no_of_fatality) AS total_fatalities
@@ -1907,20 +1912,21 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
             """,
             "4_france_vs_usa_last_10_years": """
-                SELECT EXTRACT(YEAR FROM d.date) AS year,
+                SELECT d.date AS year,
                     SUM(CASE WHEN c.country_name='FRANCE' THEN f.no_of_fatality ELSE 0 END) AS france,
                     SUM(CASE WHEN c.country_name='USA' THEN f.no_of_fatality ELSE 0 END) AS usa
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
-                WHERE EXTRACT(YEAR FROM d.date) >= EXTRACT(YEAR FROM CURRENT_DATE) - 10
-                GROUP BY year
-                ORDER BY year
+                WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
+                GROUP BY d.date
+                ORDER BY d.date
             """,
             "5_top_10_countries_fatalities": """
                 SELECT c.country_name, SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
                 GROUP BY c.country_name
                 ORDER BY total_fatalities DESC
                 LIMIT 10
@@ -1929,6 +1935,8 @@ def run_analytics_validation():
                 SELECT i.industry_code, SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_industry i ON f.industry_id = i.industry_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
                 GROUP BY i.industry_code
                 ORDER BY total_fatalities DESC
                 LIMIT 10
@@ -1937,6 +1945,8 @@ def run_analytics_validation():
                 SELECT e.employer, SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_employer e ON f.employer_id = e.employer_id
+                JOIN dim_country c ON f.country_id = c.country_id
+                JOIN dim_date d ON f.date_id = d.date_id
                 GROUP BY e.employer
                 ORDER BY total_fatalities DESC
                 LIMIT 10
@@ -1946,34 +1956,37 @@ def run_analytics_validation():
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
-                WHERE EXTRACT(YEAR FROM d.date) >= EXTRACT(YEAR FROM CURRENT_DATE) - 10
+                WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
                 GROUP BY c.country_name
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
             "9_fatalities_trend_by_industry_last_10_years": """
-                SELECT EXTRACT(YEAR FROM d.date) AS year, i.industry_code, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT d.date AS year, i.industry_code, SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_industry i ON f.industry_id = i.industry_id
                 JOIN dim_date d ON f.date_id = d.date_id
-                WHERE EXTRACT(YEAR FROM d.date) >= EXTRACT(YEAR FROM CURRENT_DATE) - 10
-                GROUP BY year, i.industry_code
-                ORDER BY year, total_fatalities DESC
+                JOIN dim_country c ON f.country_id = c.country_id
+                WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
+                GROUP BY d.date, i.industry_code
+                ORDER BY d.date, total_fatalities DESC
                 LIMIT 10
             """
         }
 
         # 6️⃣ Execute analytics queries and save results
+        os.makedirs(DATA_DIR, exist_ok=True)
+
         for name, query in queries.items():
             df = pd.read_sql(query, conn)
-            os.makedirs(DATA_DIR, exist_ok=True)
             file_path = os.path.join(DATA_DIR, f"{name}.txt")
             with open(file_path, "w") as f:
                 f.write(df.to_string(index=False))
             print(f"✔ Saved query '{name}' to {file_path}")
 
-        print("All analytics validation queries executed successfully.")
+        print("✅ All analytics validation queries executed successfully.")
 
     finally:
         # 7️⃣ Close connection safely
         conn.close()
+
