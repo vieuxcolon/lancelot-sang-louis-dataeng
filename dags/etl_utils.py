@@ -1576,38 +1576,43 @@ def create_fact(*args, **kwargs):
     conn = pg_connect()
     cur = conn.cursor()
 
+    # ----------------------------
+    # Create fact_accidents table
+    # ----------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS fact_accidents (
-            date_id BIGINT,
-            country_id BIGINT,
-            industry_id BIGINT,
-            accident_type_id BIGINT,
-            hazard_id BIGINT,
-            employer_id BIGINT,
-            fatality TEXT
+            fact_id BIGSERIAL PRIMARY KEY,          -- surrogate key for analytics
+            date_id BIGINT NOT NULL,                -- FK to dim_date
+            country_id BIGINT NOT NULL,             -- FK to dim_country
+            industry_id BIGINT NULL,                -- FK to dim_industry (optional)
+            accident_type_id BIGINT NULL,           -- FK to dim_accident_type (optional)
+            hazard_id BIGINT NULL,                  -- FK to dim_hazard (optional)
+            employer_id BIGINT NULL,                -- FK to dim_employer (optional)
+            fatality_id BIGINT NULL,                -- FK to dim_fatality (optional)
+            no_of_fatality BIGINT NOT NULL DEFAULT 1
         )
     """)
 
     conn.commit()
     conn.close()
-    print(" fact_accidents table created successfully")
+    print("fact_accidents table created successfully")
+
     
 # ==========================================================================================================
 # DAG_DATA_ANALYSE FUNCTIONS:  6. populate_fact
 # Populates the fact_accidents table from prep tables and dimension tables.
 # =========================================================================================================
 
-
 def populate_fact(*args, **kwargs):
     """
     Populates the fact_accidents table from prep tables and dimension tables.
+    Integrates dim_fatality for future-proof mapping.
     Prep tables already have correct types, so no further conversion needed.
-    Full debug: tracks prep source, duplicates, missing FKs, and bulk insert.
     """
     conn = pg_connect()
     cur = conn.cursor()
 
-    print(" Loading prep tables for fact table population...")
+    print("Loading prep tables for fact table population...")
 
     # ----------------------------
     # Load prep tables with source tracking
@@ -1617,7 +1622,7 @@ def populate_fact(*args, **kwargs):
     df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
 
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-    print(f" Combined prep tables: {len(df_fact)} rows")
+    print(f"Combined prep tables: {len(df_fact)} rows")
     print("Sample prep sources distribution:")
     print(df_fact['__source'].value_counts())
 
@@ -1636,6 +1641,7 @@ def populate_fact(*args, **kwargs):
     dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
     dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
     dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
+    dim_fatality = pd.read_sql("SELECT fatality_id, no_of_fatality, fatality_label FROM dim_fatality", conn)
 
     dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
@@ -1643,38 +1649,41 @@ def populate_fact(*args, **kwargs):
     # ----------------------------
     # Merge dimension tables
     # ----------------------------
-    print(" Merging dimension tables into prep data...")
+    print("Merging dimension tables into prep data...")
     df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
     df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
     df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
     df_fact = df_fact.merge(dim_employer, how="left", on="employer")
     df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_date, how="left", on="date")
+    # Merge fatality mapping
+    df_fact = df_fact.merge(dim_fatality, how="left", left_on="fatality", right_on="no_of_fatality")
+    df_fact.drop(columns=["fatality", "no_of_fatality", "fatality_label"], inplace=True)
 
     # ----------------------------
     # FK checks
     # ----------------------------
-    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id"]
+    fk_cols = ["date_id", "country_id", "industry_id", "accident_type_id", "hazard_id", "employer_id", "fatality_id"]
     missing_fk_counts = df_fact[fk_cols].isna().sum()
-    print(" Missing foreign keys count per column:")
+    print("Missing foreign keys count per column:")
     print(missing_fk_counts)
 
     # ----------------------------
     # Duplicate check
     # ----------------------------
-    duplicate_count = df_fact.duplicated(subset=fk_cols + ["fatality"]).sum()
-    print(f" Total duplicates (FKs + fatality): {duplicate_count}")
+    duplicate_count = df_fact.duplicated(subset=fk_cols).sum()
+    print(f"Total duplicates (FKs): {duplicate_count}")
 
     # ----------------------------
     # Prepare final fact table (already correctly typed)
     # ----------------------------
-    df_fact_final = df_fact[fk_cols + ["fatality"]].copy()
+    df_fact_final = df_fact[fk_cols].copy()
 
     # ----------------------------
     # Drop rows with missing FKs
     # ----------------------------
     df_fact_final_clean = df_fact_final.dropna(subset=fk_cols)
-    print(f" Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
+    print(f"Rows prepared for insert after dropping missing FKs: {len(df_fact_final_clean)}")
 
     # ----------------------------
     # Bulk insert using execute_values
@@ -1683,14 +1692,14 @@ def populate_fact(*args, **kwargs):
     sql = """
         INSERT INTO fact_accidents (
             date_id, country_id, industry_id, accident_type_id,
-            hazard_id, employer_id, fatality
+            hazard_id, employer_id, fatality_id
         ) VALUES %s
     """
     psycopg2.extras.execute_values(cur, sql, rows_to_insert, template=None, page_size=1000)
 
     conn.commit()
     conn.close()
-    print(f" Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
+    print(f"Fact table populated successfully with {len(rows_to_insert)} rows (bulk insert)")
 
 
 # ==========================================================================================================
