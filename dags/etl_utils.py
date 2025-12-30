@@ -1627,7 +1627,7 @@ def populate_fact(*args, **kwargs):
 
     try:
         # ----------------------------
-        # Step 0: dynamic union CTE
+        # Step 0: dynamic union CTE with normalized employer
         # ----------------------------
         cte_parts = []
         for table in prep_tables:
@@ -1638,11 +1638,15 @@ def populate_fact(*args, **kwargs):
                 WHERE table_name = '{table}' 
             """)
             table_cols = [row[0] for row in cur.fetchall()]
-            
+
             select_parts = []
             for col in mandatory_cols + optional_cols:
                 if col in table_cols:
-                    select_parts.append(col)
+                    if col == "employer":
+                        # normalize employer text if exists
+                        select_parts.append(f"TRIM(UPPER({col})) AS employer")
+                    else:
+                        select_parts.append(col)
                 else:
                     select_parts.append(f"NULL AS {col}")
             cte_parts.append(f"SELECT {', '.join(select_parts)} FROM {table}")
@@ -1650,7 +1654,7 @@ def populate_fact(*args, **kwargs):
         prep_union_sql = "WITH prep_data AS (\n" + "\nUNION ALL\n".join(cte_parts) + "\n)\n"
 
         # ----------------------------
-        # Debug counts
+        # Step 0a: debug counts
         # ----------------------------
         debug_sql = prep_union_sql + f"""
         SELECT
