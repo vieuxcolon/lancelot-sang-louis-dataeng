@@ -1319,7 +1319,7 @@ def drop_dimensions(*args, **kwargs):
     """
     conn = pg_connect()
     cur = conn.cursor()
-    tables = ["dim_country", "dim_date", "dim_location", "dim_industry",
+    tables = ["dim_country", "dim_date", "dim_fatality", "dim_industry",
               "dim_accident_type", "dim_hazard", "dim_employer",
               "country_synonym", "original_dim_location"]
     for t in tables:
@@ -1354,6 +1354,19 @@ def create_dimensions(*args, **kwargs):
     """
     conn = pg_connect()
     cur = conn.cursor()
+    
+    
+    # ----------------------------
+    # dim_fatality
+    # ----------------------------
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS dim_fatality (
+            fatality_id SERIAL PRIMARY KEY,
+            no_of_fatality INT UNIQUE NOT NULL,
+            fatality_label TEXT NOT NULL
+        )
+    """)
+
 
     # ----------------------------
     # dim_date
@@ -1468,6 +1481,7 @@ def populate_dimensions(*args, **kwargs):
     insert_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type", "accident_type_id")
     insert_dim([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard", "hazard_id")
     insert_dim([df_aria, df_work, df_fatal], "employer", "dim_employer", "employer_id")
+    insert_dim([df_aria, df_work, df_fatal], "fatality", "dim_fatality", "fatality_id")
   
 
     # ----------------------------
