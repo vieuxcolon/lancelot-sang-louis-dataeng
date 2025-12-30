@@ -1072,69 +1072,102 @@ def create_fatalities_clean():
 def create_ariadb_prep():
     src_table = DB_CONFIG["ariadb_clean_table"]
     dst_table = DB_CONFIG["ariadb_prep_table"]
+
     conn = pg_connect()
     df = pd.read_sql(f'SELECT * FROM "{src_table}"', conn)
 
-    # 1 Rename and convert date to string YYYY-MM-DD
+    # 1️⃣ Rename and convert date to string YYYY-MM-DD
     if "incident_date" in df.columns:
-        df["date"] = pd.to_datetime(df["incident_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["date"] = pd.to_datetime(
+            df["incident_date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
         df.drop(columns=["incident_date"], inplace=True)
 
-    # 2 Normalize country
+    # 2️⃣ Normalize country
     if "country" in df.columns:
         df = normalize_country(df, "country")
     else:
         df["country"] = "UNKNOWN"
 
-    # 3 Convert numeric IDs
-    for col in ["industry_code", "aria_id"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    # 3️⃣ Convert IDs (IMPORTANT FIX)
+    # aria_id is numeric
+    if "aria_id" in df.columns:
+        df["aria_id"] = pd.to_numeric(
+            df["aria_id"], errors="coerce"
+        ).astype("Int64")
 
-    # 4 Add fatality flag based on hazard_class
+    # industry_code MUST remain TEXT
+    if "industry_code" in df.columns:
+        df["industry_code"] = (
+            df["industry_code"]
+            .astype(str)
+            .str.strip()
+            .replace({"nan": None})
+        )
+
+    # 4️⃣ Add fatality flag
     df["fatality"] = df.get("hazard_class", "").apply(
         lambda x: 1 if pd.notna(x) and str(x).strip() != "" else 0
     )
 
-    # 5 Drop rows where all key columns are null
-    key_cols = ["aria_id","date","country","department","municipality","hazard_class","industry_code"]
+    # 5️⃣ Drop rows where all key columns are null
+    key_cols = [
+        "aria_id",
+        "date",
+        "country",
+        "department",
+        "municipality",
+        "hazard_class",
+        "industry_code",
+    ]
     existing_keys = [c for c in key_cols if c in df.columns]
     df = df.dropna(how="all", subset=existing_keys)
 
-    # 6 Drop rows with only PK populated
+    # 6️⃣ Drop rows with only PK populated
     non_pk_cols = [c for c in existing_keys if c != "aria_id"]
     if non_pk_cols:
         df = df[df[non_pk_cols].notna().any(axis=1)]
 
-    # 7 Deduplicate on PK
+    # 7️⃣ Deduplicate on PK
     if "aria_id" in df.columns:
         df = df.drop_duplicates(subset=["aria_id"])
 
-    # 8 Create prep table with correct types
+    # 8️⃣ Recreate prep table with correct types
     cursor = conn.cursor()
     cursor.execute(f'DROP TABLE IF EXISTS "{dst_table}"')
+
     col_defs = []
     for c in df.columns:
-        if c in ["aria_id","industry_code"]:
+        if c == "aria_id":
             col_defs.append(f'"{c}" BIGINT')
         elif c == "fatality":
             col_defs.append(f'"{c}" INT')
         else:
             col_defs.append(f'"{c}" TEXT')
-    pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
-    cursor.execute(f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});')
 
-    # 9 Insert data
+    pk = ", PRIMARY KEY (aria_id)" if "aria_id" in df.columns else ""
+    cursor.execute(
+        f'CREATE TABLE "{dst_table}" ({", ".join(col_defs)}{pk});'
+    )
+
+    # 9️⃣ Insert data
     insert_sql = f"""
         INSERT INTO "{dst_table}" ({", ".join([f'"{c}"' for c in df.columns])})
         VALUES ({", ".join(["%s"] * len(df.columns))})
     """
+
     for _, row in df.iterrows():
-        cursor.execute(insert_sql, [None if pd.isna(v) else v for v in row.values])
+        cursor.execute(
+            insert_sql,
+            [None if pd.isna(v) else v for v in row.values],
+        )
 
     conn.commit()
     conn.close()
-    print(f" Created ariadb_prep ({len(df)} rows)")
+
+    print(f" Created {dst_table} ({len(df)} rows)")
+
+
     
 # ==========================================================================================================
 # DAG_DATA_PREP FUNCTIONS:  2. create_workaccidents_prep
@@ -1427,7 +1460,7 @@ def populate_dimensions(*args, **kwargs):
     def insert_dim(df_list, col, table, id_col):
         frames = [df[[col]] for df in df_list if col in df.columns]
         if not frames:
-            print(f"⚠ No column '{col}' found in prep tables, skipping {table}")
+            print(f"No column '{col}' found in prep tables, skipping {table}")
             return
         df_dim = pd.concat(frames, ignore_index=True).dropna().drop_duplicates()
         inserted = 0
@@ -1447,6 +1480,7 @@ def populate_dimensions(*args, **kwargs):
     insert_dim([df_aria, df_work, df_fatal], "accident_type", "dim_accident_type", "accident_type_id")
     insert_dim([df_aria, df_work, df_fatal], "hazard_class", "dim_hazard", "hazard_id")
     insert_dim([df_aria, df_work, df_fatal], "employer", "dim_employer", "employer_id")
+    insert_dim([df_aria, df_work, df_fatal], "location", "dim_location", "location_id")
 
     # ----------------------------
     # Populate dim_date
