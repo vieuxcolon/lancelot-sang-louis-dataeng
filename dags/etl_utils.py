@@ -1612,153 +1612,111 @@ def create_fact(*args, **kwargs):
 
 def populate_fact(*args, **kwargs):
     """
-    Populate fact_accidents using dimension tables as the sole source of surrogate keys.
-    Prep tables are used only as descriptive sources.
-    Optional dimensions may produce NULL FKs by design.
+    Populate fact_accidents fully using dimension tables.
+    Step 0: combine prep tables
+    Step 1: full insert with optional FKs
+    Step 2: fallback insert with mandatory FKs only
     """
-
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("▶ START: Populate Fact Table")
-
     try:
-        # -------------------------------------------------
-        # Step 0: Combine prep tables (row-level, not dims)
-        # -------------------------------------------------
-        prep_cte = """
+        # ----------------------------
+        # Step 0: Union prep tables into a CTE
+        # ----------------------------
+        prep_union_sql = """
         WITH prep_data AS (
-            SELECT
-                date,
-                country,
-                COALESCE(no_of_fatality, 1) AS no_of_fatality,
-                industry_code,
-                accident_type,
-                hazard_class,
-                employer
+            SELECT date, country, fatality, industry_code, accident_type, hazard_class, employer
             FROM workaccidents_prep
-
             UNION ALL
-
-            SELECT
-                date,
-                country,
-                COALESCE(no_of_fatality, 1),
-                industry_code,
-                accident_type,
-                hazard_class,
-                employer
+            SELECT date, country, fatality, industry_code, accident_type, hazard_class, employer
             FROM ariadb_prep
-
             UNION ALL
-
-            SELECT
-                date,
-                country,
-                COALESCE(no_of_fatality, 1),
-                industry_code,
-                accident_type,
-                hazard_class,
-                employer
+            SELECT date, country, fatality,
+                   NULL::TEXT AS industry_code,
+                   NULL::TEXT AS accident_type,
+                   NULL::TEXT AS hazard_class,
+                   NULL::TEXT AS employer
             FROM fatalities_prep
         )
         """
 
-        # -------------------------------------------------
-        # Step 1: Debug visibility (prep → dimension impact)
-        # -------------------------------------------------
-        cur.execute(prep_cte + """
-            SELECT
-                COUNT(*) AS total_rows,
-                COUNT(*) FILTER (WHERE industry_code IS NULL) AS missing_industry,
-                COUNT(*) FILTER (WHERE accident_type IS NULL) AS missing_accident_type,
-                COUNT(*) FILTER (WHERE hazard_class IS NULL) AS missing_hazard,
-                COUNT(*) FILTER (WHERE employer IS NULL) AS missing_employer
-            FROM prep_data
-        """)
-        stats = cur.fetchone()
+        # ----------------------------
+        # Step 0b: debug optional FKs
+        # ----------------------------
+        debug_sql = prep_union_sql + """
+        SELECT
+            COUNT(*) FILTER (WHERE industry_code IS NULL) AS missing_industry,
+            COUNT(*) FILTER (WHERE accident_type IS NULL) AS missing_accident_type,
+            COUNT(*) FILTER (WHERE hazard_class IS NULL) AS missing_hazard,
+            COUNT(*) FILTER (WHERE employer IS NULL) AS missing_employer,
+            COUNT(*) AS total_rows
+        FROM prep_data
+        """
+        cur.execute(debug_sql)
+        missing_counts = cur.fetchone()
+        print("Prep table NULL summary (optional FKs):")
+        print(f"  missing_industry: {missing_counts[0]}")
+        print(f"  missing_accident_type: {missing_counts[1]}")
+        print(f"  missing_hazard: {missing_counts[2]}")
+        print(f"  missing_employer: {missing_counts[3]}")
+        print(f"  total_rows: {missing_counts[4]}")
 
-        print("Prep data diagnostics:")
-        print(f"  total_rows:            {stats[0]}")
-        print(f"  missing_industry:      {stats[1]}")
-        print(f"  missing_accident_type: {stats[2]}")
-        print(f"  missing_hazard:        {stats[3]}")
-        print(f"  missing_employer:      {stats[4]}")
-
-        # -------------------------------------------------
-        # Step 2: Full insert (mandatory + optional dims)
-        # -------------------------------------------------
-        cur.execute(prep_cte + """
-            INSERT INTO fact_accidents (
-                date_id,
-                country_id,
-                fatality_id,
-                industry_id,
-                accident_type_id,
-                hazard_id,
-                employer_id,
-                no_of_fatality
-            )
-            SELECT
-                d.date_id,
-                c.country_id,
-                f.fatality_id,
-                i.industry_id,
-                at.accident_type_id,
-                h.hazard_id,
-                e.employer_id,
-                p.no_of_fatality
-            FROM prep_data p
-            JOIN dim_date d
-                ON d.date = p.date
-            JOIN dim_country c
-                ON c.country_name = p.country
-            JOIN dim_fatality f
-                ON f.no_of_fatality = p.no_of_fatality
-            LEFT JOIN dim_industry i
-                ON i.industry_code = p.industry_code
-            LEFT JOIN dim_accident_type at
-                ON at.accident_type = p.accident_type
-            LEFT JOIN dim_hazard h
-                ON h.hazard_class = p.hazard_class
-            LEFT JOIN dim_employer e
-                ON e.employer = p.employer
-        """)
-
+        # ----------------------------
+        # Step 1: Full insert with optional FKs
+        # ----------------------------
+        insert_full_sql = prep_union_sql + """
+        INSERT INTO fact_accidents (
+            date_id, country_id, fatality_id,
+            industry_id, accident_type_id, hazard_id, employer_id,
+            no_of_fatality
+        )
+        SELECT
+            d.date_id,
+            c.country_id,
+            f.fatality_id,
+            i.industry_id,
+            atype.accident_type_id,
+            h.hazard_id,
+            e.employer_id,
+            f.no_of_fatality
+        FROM prep_data p
+        JOIN dim_date d ON d.date = p.date
+        JOIN dim_country c ON c.country_name = p.country
+        JOIN dim_fatality f ON f.no_of_fatality = p.fatality
+        LEFT JOIN dim_industry i ON i.industry_code = p.industry_code
+        LEFT JOIN dim_accident_type atype ON atype.accident_type = p.accident_type
+        LEFT JOIN dim_hazard h ON h.hazard_class = p.hazard_class
+        LEFT JOIN dim_employer e ON e.employer = p.employer
+        """
+        cur.execute(insert_full_sql)
         conn.commit()
-        print("✔ fact_accidents populated successfully (mandatory + optional dimensions)")
+        print("✔ fact_accidents populated successfully (full)")
 
     except Exception as e:
         conn.rollback()
-        print("⚠ Full insert failed, falling back to mandatory dimensions only")
-        print(f"  Error: {e}")
+        print("⚠ Full insert failed, falling back to mandatory FKs only:", e)
 
-        # -------------------------------------------------
-        # Step 3: Fallback — mandatory dimensions only
-        # -------------------------------------------------
-        cur.execute(prep_cte + """
-            INSERT INTO fact_accidents (
-                date_id,
-                country_id,
-                fatality_id,
-                no_of_fatality
-            )
-            SELECT
-                d.date_id,
-                c.country_id,
-                f.fatality_id,
-                p.no_of_fatality
-            FROM prep_data p
-            JOIN dim_date d
-                ON d.date = p.date
-            JOIN dim_country c
-                ON c.country_name = p.country
-            JOIN dim_fatality f
-                ON f.no_of_fatality = p.no_of_fatality
-        """)
-
+        # ----------------------------
+        # Step 2: Fallback insert with mandatory FKs only
+        # ----------------------------
+        insert_mandatory_sql = prep_union_sql + """
+        INSERT INTO fact_accidents (
+            date_id, country_id, fatality_id, no_of_fatality
+        )
+        SELECT
+            d.date_id,
+            c.country_id,
+            f.fatality_id,
+            f.no_of_fatality
+        FROM prep_data p
+        JOIN dim_date d ON d.date = p.date
+        JOIN dim_country c ON c.country_name = p.country
+        JOIN dim_fatality f ON f.no_of_fatality = p.fatality
+        """
+        cur.execute(insert_mandatory_sql)
         conn.commit()
-        print("✔ fact_accidents populated with mandatory dimensions only")
+        print("✔ fact_accidents populated with mandatory FKs only")
 
     finally:
         conn.close()
