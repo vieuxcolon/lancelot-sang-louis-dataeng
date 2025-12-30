@@ -1710,11 +1710,11 @@ def populate_fact(*args, **kwargs):
         """
         cur.execute(insert_sql)
         conn.commit()
-        print("✔ fact_accidents populated successfully (full)")
+        print(" fact_accidents populated successfully (full)")
 
     except Exception as e:
         conn.rollback()
-        print("⚠ Full insert failed, falling back to mandatory FKs only:", e)
+        print(" Full insert failed, falling back to mandatory FKs only:", e)
 
         # ----------------------------
         # Step 2: fallback: only mandatory FKs
@@ -1738,18 +1738,17 @@ def populate_fact(*args, **kwargs):
         """
         cur.execute(insert_mandatory_sql)
         conn.commit()
-        print("✔ fact_accidents populated with mandatory FKs only")
+        print(" fact_accidents populated with mandatory FKs only")
 
     finally:
         conn.close()
-        print("✔ Connection closed")
+        print(" Connection closed")
 
 
 # ==========================================================================================================
 # DAG_DATA_ANALYSE FUNCTIONS:  7. min_test_star_schema
 # Minimal test of star schema functions.
-#  =========================================================
-# ================================================
+#  ==========================================================================================================
 
 def min_test_star_schema(*args, **kwargs):
     """
@@ -1783,9 +1782,6 @@ def full_test_star_schema(*args, **kwargs):
     Select top 20 rows from fact_accidents with joins to all dimensions.
     Ensures that all dimension references exist and the schema is correct.
     """
-
-    import pandas as pd
-    from etl_utils import pg_connect  # Assuming pg_connect is defined in etl_utils
 
     conn = pg_connect()
 
@@ -1827,12 +1823,24 @@ def full_test_star_schema(*args, **kwargs):
 
     finally:
         conn.close()
-        print("✔ Connection closed")
+        print(" Connection closed")
 
 # ==========================================================================================================
 # DAG_DATA_ANALYTICS_VALIDATION FUNCTIONS:  1. run_analytics_validation
 # Run predefined analytics validation queries and save outputs.
 #= =========================================================================================================
+
+"""
+run_analytics_validation.py
+
+Runs a full set of analytics validation queries on the current star schema.
+Outputs deterministic, auditable result files including:
+- Query title
+- Query SQL
+- Query results
+
+No regression overwrites. Uses current dimension and fact table schemas.
+"""
 
 def run_analytics_validation():
     """
@@ -1840,12 +1848,11 @@ def run_analytics_validation():
     Uses current dimension and fact table columns and types.
     """
 
-    # 1️⃣ Open DB connection
-   
+    # 1. Open DB connection
     conn = pg_connect()
 
     try:
-        # 2️⃣ Log database connection identity
+        # 2. Log database connection identity
         identity_df = pd.read_sql(
             """
             SELECT
@@ -1856,15 +1863,15 @@ def run_analytics_validation():
             """,
             conn
         )
-        print("🔍 Database connection identity:")
+        print(" Database connection identity:")
         print(identity_df.to_string(index=False))
 
-        # 3️⃣ Force schema visibility safely
+        # 3. Force schema visibility
         cur = conn.cursor()
         cur.execute("SET search_path TO public;")
         cur.close()
 
-        # 4️⃣ Validate dim_date exists and has data
+        # 4. Validate dim_date exists and has data
         dim_check = pd.read_sql(
             "SELECT COUNT(*) AS row_count FROM dim_date;",
             conn
@@ -1872,38 +1879,50 @@ def run_analytics_validation():
 
         if dim_check.loc[0, "row_count"] == 0:
             raise RuntimeError(
-                "❌ dim_date is visible but empty — analytics validation aborted."
+                " dim_date is visible but empty — analytics validation aborted."
             )
 
-        print("✅ dim_date table is visible and populated. Proceeding with analytics.")
+        print(" dim_date table is visible and populated. Proceeding with analytics.")
 
-        # 5️⃣ Define analytics queries
+        # 5. Define analytics queries
         queries = {
             "1_fatalities_by_year": """
-                SELECT d.date AS year, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    d.date AS year,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_date d ON f.date_id = d.date_id
                 GROUP BY d.date
                 ORDER BY d.date
             """,
+
             "2_fatalities_by_country": """
-                SELECT c.country_name AS country, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    c.country_name AS country,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 GROUP BY c.country_name
                 ORDER BY total_fatalities DESC
             """,
+
             "3_fatalities_by_industry": """
-                SELECT i.industry_code AS industry, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    i.industry_code AS industry,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_industry i ON f.industry_id = i.industry_id
                 GROUP BY i.industry_code
                 ORDER BY total_fatalities DESC
             """,
+
             "4_france_vs_usa_last_10_years": """
-                SELECT d.date AS year,
-                    SUM(CASE WHEN c.country_name='FRANCE' THEN f.no_of_fatality ELSE 0 END) AS france,
-                    SUM(CASE WHEN c.country_name='USA' THEN f.no_of_fatality ELSE 0 END) AS usa
+                SELECT
+                    d.date AS year,
+                    SUM(CASE WHEN c.country_name = 'FRANCE'
+                             THEN f.no_of_fatality ELSE 0 END) AS france,
+                    SUM(CASE WHEN c.country_name = 'USA'
+                             THEN f.no_of_fatality ELSE 0 END) AS usa
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
@@ -1911,8 +1930,11 @@ def run_analytics_validation():
                 GROUP BY d.date
                 ORDER BY d.date
             """,
+
             "5_top_10_countries_fatalities": """
-                SELECT c.country_name, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    c.country_name,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
@@ -1920,8 +1942,11 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
+
             "6_top_10_industries_fatalities": """
-                SELECT i.industry_code, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    i.industry_code,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_industry i ON f.industry_id = i.industry_id
                 JOIN dim_country c ON f.country_id = c.country_id
@@ -1930,8 +1955,11 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
+
             "7_top_10_employers_fatalities": """
-                SELECT e.employer, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    e.employer,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_employer e ON f.employer_id = e.employer_id
                 JOIN dim_country c ON f.country_id = c.country_id
@@ -1940,8 +1968,11 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
+
             "8_recent_10_year_fatalities_by_country": """
-                SELECT c.country_name, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    c.country_name,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_country c ON f.country_id = c.country_id
                 JOIN dim_date d ON f.date_id = d.date_id
@@ -1950,8 +1981,12 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
+
             "9_fatalities_trend_by_industry_last_10_years": """
-                SELECT d.date AS year, i.industry_code, SUM(f.no_of_fatality) AS total_fatalities
+                SELECT
+                    d.date AS year,
+                    i.industry_code,
+                    SUM(f.no_of_fatality) AS total_fatalities
                 FROM fact_accidents f
                 JOIN dim_industry i ON f.industry_id = i.industry_id
                 JOIN dim_date d ON f.date_id = d.date_id
@@ -1963,18 +1998,26 @@ def run_analytics_validation():
             """
         }
 
-        # 6️⃣ Execute analytics queries and save results
+        # 6. Execute analytics queries and save results
         ANALYTICS_DATA_DIR = "/opt/airflow/data/analytics_results"
         os.makedirs(ANALYTICS_DATA_DIR, exist_ok=True)
 
         for name, query in queries.items():
             df = pd.read_sql(query, conn)
             file_path = os.path.join(ANALYTICS_DATA_DIR, f"{name}.txt")
-            with open(file_path, "w") as f:
-                f.write(df.to_string(index=False))
-            print(f"✔ Saved query '{name}' to {file_path}")
 
-        print("✅ All analytics validation queries executed successfully.")
+            with open(file_path, "w") as f:
+                f.write(f"Query Title:\n{name}\n\n")
+                f.write("Query SQL:\n")
+                f.write("-" * 50 + "\n")
+                f.write(query.strip() + "\n\n")
+                f.write("Query Results:\n")
+                f.write("=" * 50 + "\n")
+                f.write(df.to_string(index=False))
+
+            print(f" Saved analytics result: {file_path}")
+
+        print(" All analytics validation queries executed successfully.")
 
     finally:
         # 7️⃣ Close connection safely
