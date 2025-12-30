@@ -1620,6 +1620,7 @@ def populate_fact(*args, **kwargs):
     """
     import psycopg2.extras
     import pandas as pd
+    from datetime import datetime
 
     conn = pg_connect()
     cur = conn.cursor()
@@ -1705,14 +1706,15 @@ def populate_fact(*args, **kwargs):
     print(f"Rows prepared for insert after dropping missing mandatory FKs: {len(df_fact_final)}")
 
     if df_fact_final.empty:
-        print(" Fact_accidents rows empty – nothing to insert")
+        print("Fact_accidents rows empty – nothing to insert")
         conn.close()
         return
-    
+
     # ----------------------------
-    # Replace NaN with None for optional FKs
+    # Replace NaN with None and convert numeric columns to Python int
     # ----------------------------
-    df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
+    for col in fact_cols:
+        df_fact_final[col] = df_fact_final[col].apply(lambda x: int(x) if pd.notnull(x) else None)
 
     # ----------------------------
     # Debug: preview first 10 rows as tuples
@@ -1723,10 +1725,10 @@ def populate_fact(*args, **kwargs):
         for r in rows_to_insert[:10]:
             print(r)
     else:
-        print(" fact_accidents rows empty - nothing to insert")
+        print("Fact_accidents rows empty – nothing to insert")
 
     # ----------------------------
-    # Bulk insert
+    # Bulk insert using execute_values
     # ----------------------------
     if rows_to_insert:
         insert_sql = """
@@ -1750,6 +1752,7 @@ def populate_fact(*args, **kwargs):
     conn.commit()
     conn.close()
     print(f"✔ Fact table populated successfully with {len(rows_to_insert)} rows")
+
 
 
 # ==========================================================================================================
