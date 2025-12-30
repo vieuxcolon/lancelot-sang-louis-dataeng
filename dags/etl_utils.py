@@ -1612,144 +1612,100 @@ def create_fact(*args, **kwargs):
 
 def populate_fact(*args, **kwargs):
     """
-    Populates fact_accidents from prep tables and dimensions.
-
-    Rules:
-    - Mandatory dimensions: date, country, fatality
-    - Optional dimensions: industry, accident_type, hazard, employer
-    - Each prep row represents exactly ONE accident/fatality
+    Populate fact_accidents fully using SQL, avoiding Pandas conversions.
+    Optional FKs are handled with LEFT JOIN. Includes debug counts for NULLs.
     """
 
     conn = pg_connect()
     cur = conn.cursor()
 
-    print("▶ START: Populate Fact Table")
+    try:
+        # ----------------------------
+        # Debug: count missing optional FKs in prep data
+        # ----------------------------
+        cur.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE p.industry_code IS NULL) AS missing_industry,
+                COUNT(*) FILTER (WHERE p.accident_type IS NULL) AS missing_accident_type,
+                COUNT(*) FILTER (WHERE p.hazard IS NULL) AS missing_hazard,
+                COUNT(*) FILTER (WHERE p.employer IS NULL) AS missing_employer,
+                COUNT(*) AS total_rows
+            FROM prep_table_combined p
+        """)
+        missing_counts = cur.fetchone()
+        print("Prep table NULL summary (optional FKs):")
+        print(f"  missing_industry: {missing_counts[0]}")
+        print(f"  missing_accident_type: {missing_counts[1]}")
+        print(f"  missing_hazard: {missing_counts[2]}")
+        print(f"  missing_employer: {missing_counts[3]}")
+        print(f"  total_rows: {missing_counts[4]}")
 
-    # ----------------------------
-    # Load prep tables with source tracking
-    # ----------------------------
-    df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
-    df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
-    df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
-
-    df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-    print(f"Combined prep tables: {len(df_fact)} rows")
-    print("Sample prep sources distribution:")
-    print(df_fact["__source"].value_counts())
-
-    # ----------------------------
-    # Normalize mandatory join columns
-    # ----------------------------
-    df_fact["date"] = df_fact["date"].astype(str).str.strip()
-    df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
-
-    # ----------------------------
-    # Load dimension tables
-    # ----------------------------
-    dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
-    dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
-    dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
-    dim_accident_type = pd.read_sql("SELECT accident_type_id, accident_type FROM dim_accident_type", conn)
-    dim_hazard = pd.read_sql("SELECT hazard_id, hazard_class FROM dim_hazard", conn)
-    dim_employer = pd.read_sql("SELECT employer_id, employer FROM dim_employer", conn)
-    dim_fatality = pd.read_sql("SELECT fatality_id FROM dim_fatality LIMIT 1", conn)
-
-    if dim_fatality.empty:
-        raise RuntimeError("dim_fatality is empty – cannot populate fact table")
-    fatality_id = int(dim_fatality.iloc[0]["fatality_id"])
-
-    # Normalize dimension keys
-    dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
-    dim_date["date"] = dim_date["date"].astype(str).str.strip()
-
-    # ----------------------------
-    # Merge dimensions (LEFT JOIN to preserve all prep rows)
-    # ----------------------------
-    print("Merging dimension tables into prep data...")
-    df_fact = df_fact.merge(dim_date, how="left", on="date")
-    df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
-    df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
-    df_fact = df_fact.merge(dim_accident_type, how="left", on="accident_type")
-    df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
-    df_fact = df_fact.merge(dim_employer, how="left", on="employer")
-
-    # Assign fatality_id (single-row dimension)
-    df_fact["fatality_id"] = fatality_id
-
-    # ----------------------------
-    # Ensure optional FK columns exist
-    # ----------------------------
-    optional_fk_cols = ["industry_id", "accident_type_id", "hazard_id", "employer_id"]
-    for col in optional_fk_cols:
-        if col not in df_fact.columns:
-            df_fact[col] = None
-
-    # ----------------------------
-    # Define mandatory vs optional FKs
-    # ----------------------------
-    mandatory_fk_cols = ["date_id", "country_id", "fatality_id"]
-    fact_cols = mandatory_fk_cols + optional_fk_cols
-
-    # ----------------------------
-    # FK diagnostics
-    # ----------------------------
-    missing_fk_counts = df_fact[fact_cols].isna().sum()
-    print("Missing foreign keys count per column:")
-    print(missing_fk_counts)
-
-    # ----------------------------
-    # Drop rows missing mandatory FKs
-    # ----------------------------
-    df_fact_final = df_fact[fact_cols].dropna(subset=mandatory_fk_cols)
-    print(f"Rows prepared for insert after dropping missing mandatory FKs: {len(df_fact_final)}")
-
-    if df_fact_final.empty:
-        print("Fact_accidents rows empty – nothing to insert")
-        conn.close()
-        return
-
-    # ----------------------------
-    # Replace NaN with None and convert numeric columns to Python int
-    # ----------------------------
-    for col in fact_cols:
-        df_fact_final[col] = df_fact_final[col].apply(lambda x: int(x) if pd.notnull(x) else None)
-
-    # ----------------------------
-    # Debug: preview first 10 rows as tuples
-    # ----------------------------
-    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
-    if rows_to_insert:
-        print("Preview of first 10 rows to be inserted into fact_accidents:")
-        for r in rows_to_insert[:10]:
-            print(r)
-    else:
-        print("Fact_accidents rows empty – nothing to insert")
-
-    # ----------------------------
-    # Bulk insert using execute_values
-    # ----------------------------
-    if rows_to_insert:
-        insert_sql = """
+        # ----------------------------
+        # Step 1: Full insert with optional FKs
+        # ----------------------------
+        cur.execute("""
             INSERT INTO fact_accidents (
-                date_id,
-                country_id,
-                fatality_id,
-                industry_id,
-                accident_type_id,
-                hazard_id,
-                employer_id
-            ) VALUES %s
-        """
-        psycopg2.extras.execute_values(
-            cur,
-            insert_sql,
-            rows_to_insert,
-            page_size=1000
-        )
+                date_id, country_id, fatality_id,
+                industry_id, accident_type_id, hazard_id, employer_id,
+                no_of_fatality
+            )
+            SELECT 
+                d.date_id,
+                c.country_id,
+                f.fatality_id,
+                i.industry_id,
+                atype.accident_type_id,
+                h.hazard_id,
+                e.employer_id,
+                COALESCE(f.no_of_fatality, 1) AS no_of_fatality
+            FROM
+                prep_table_combined p
+                JOIN dim_date d 
+                    ON d.date = p.date
+                JOIN dim_country c 
+                    ON c.country_name = p.country
+                JOIN dim_fatality f 
+                    ON f.no_of_fatality = p.no_of_fatality
+                LEFT JOIN dim_industry i 
+                    ON i.industry_code = p.industry_code
+                LEFT JOIN dim_accident_type atype 
+                    ON atype.accident_type = p.accident_type
+                LEFT JOIN dim_hazard h 
+                    ON h.hazard_class = p.hazard
+                LEFT JOIN dim_employer e 
+                    ON e.employer = p.employer
+        """)
+        conn.commit()
+        print("✔ fact_accidents populated successfully (full)")
+    except Exception as e:
+        conn.rollback()
+        print("⚠ Error during populate_fact, trying mandatory FKs only:", e)
 
-    conn.commit()
-    conn.close()
-    print(f"✔ Fact table populated successfully with {len(rows_to_insert)} rows")
+        # ----------------------------
+        # Step 2 fallback: only mandatory FKs
+        # ----------------------------
+        cur.execute("""
+            INSERT INTO fact_accidents (
+                date_id, country_id, fatality_id, no_of_fatality
+            )
+            SELECT 
+                d.date_id,
+                c.country_id,
+                f.fatality_id,
+                COALESCE(f.no_of_fatality, 1) AS no_of_fatality
+            FROM
+                prep_table_combined p
+                JOIN dim_date d 
+                    ON d.date = p.date
+                JOIN dim_country c 
+                    ON c.country_name = p.country
+                JOIN dim_fatality f 
+                    ON f.no_of_fatality = p.no_of_fatality
+        """)
+        conn.commit()
+        print("✔ fact_accidents populated with mandatory FKs only")
+    finally:
+        conn.close()
 
 
 # ==========================================================================================================
