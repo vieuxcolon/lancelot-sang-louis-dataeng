@@ -1574,23 +1574,28 @@ def populate_dimensions(*args, **kwargs):
 
 def create_fact(*args, **kwargs):
     """
-    Creates fact_accidents table aligned with populate_fact function.
-    Mandatory FKs: date_id, country_id, fatality_id
-    Optional FKs: industry_id, accident_type_id, hazard_id, employer_id
-    """
+    Creates the fact_accidents table for the star schema.
 
+    Columns:
+    - fact_id: surrogate key (BIGSERIAL)
+    - date_id, country_id, fatality_id: mandatory FKs
+    - industry_id, accident_type_id, hazard_id, employer_id: optional FKs
+    - no_of_fatality: default 1 for each row
+    """
     conn = pg_connect()
     cur = conn.cursor()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS fact_accidents (
-            date_id BIGINT NOT NULL,
-            country_id BIGINT NOT NULL,
-            fatality_id BIGINT NOT NULL,
-            industry_id BIGINT,
-            accident_type_id BIGINT,
-            hazard_id BIGINT,
-            employer_id BIGINT
+            fact_id BIGSERIAL PRIMARY KEY,          -- surrogate key
+            date_id BIGINT NOT NULL,                -- FK to dim_date
+            country_id BIGINT NOT NULL,             -- FK to dim_country
+            fatality_id BIGINT NOT NULL,            -- FK to dim_fatality
+            industry_id BIGINT NULL,                -- FK to dim_industry (optional)
+            accident_type_id BIGINT NULL,           -- FK to dim_accident_type (optional)
+            hazard_id BIGINT NULL,                  -- FK to dim_hazard (optional)
+            employer_id BIGINT NULL,                -- FK to dim_employer (optional)
+            no_of_fatality BIGINT NOT NULL DEFAULT 1
         )
     """)
 
@@ -1598,7 +1603,7 @@ def create_fact(*args, **kwargs):
     conn.close()
     print("✔ fact_accidents table created successfully")
 
-    
+
 # ==========================================================================================================
 # DAG_DATA_ANALYSE FUNCTIONS:  6. populate_fact
 # Populates the fact_accidents table from prep tables and dimension tables.
@@ -1696,30 +1701,28 @@ def populate_fact(*args, **kwargs):
     # -------------------------------------------------
     # Drop rows missing ONLY mandatory FKs
     # -------------------------------------------------
-    df_fact_final = df_fact.dropna(subset=mandatory_fk_cols)
-    print(f"Rows ready for insert (after dropping missing mandatory FKs): {len(df_fact_final)}")
+    df_fact_final = df_fact[fact_cols].dropna(subset=mandatory_fk_cols)
 
-    if df_fact_final.empty:
-        print("⚠️ No rows eligible for insertion into fact_accidents. Running diagnostics...")
+    print(
+        f"Rows prepared for insert after dropping missing mandatory FKs: "
+        f"{len(df_fact_final)}"
+    )
 
-        # Diagnostic: top 10 rows missing mandatory FKs
-        missing_rows = df_fact[df_fact[mandatory_fk_cols].isna().any(axis=1)]
-        print("Top 10 rows missing mandatory FKs:")
-        print(missing_rows.head(10))
-
-        # Show which FK is missing per column
-        for col in mandatory_fk_cols:
-            missing_count = missing_rows[col].isna().sum()
-            if missing_count > 0:
-                print(f"  - {missing_count} rows missing {col}")
-
+    # ----------------------------
+    # DEBUG: Preview first 10 rows to insert
+    # ----------------------------
+    if not df_fact_final.empty:
+        print("Preview of first 10 rows to be inserted into fact_accidents:")
+        print(df_fact_final.head(10))
+    else:
+        print("⚠️ fact_accidents rows empty – no eligible rows for insertion")
         conn.close()
         return
 
     # -------------------------------------------------
     # Bulk insert
     # -------------------------------------------------
-    rows_to_insert = [tuple(row) for row in df_fact_final[fact_cols].to_numpy()]
+    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
 
     insert_sql = """
         INSERT INTO fact_accidents (
