@@ -1513,7 +1513,7 @@ def populate_dimensions(*args, **kwargs):
     "PAPOUASIE-NOUVELLE-GUINEE": "PG", "PAYS-BAS": "NL", "PEROU": "PE", "PHILIPPINES": "PH", "POLOGNE": "PL", "PORTO RICO": "PR", "PORTUGAL": "PT", "QATAR": "QA", "ROUMANIE": "RO", "RUSSIE": "RU", "RWANDA": "RWANDA", "SAINTE-LUCIE": "LC",
     "SALVADOR": "SV", "SENEGAL": "SN", "SERBIE": "RS", "SERBIE-ET-MONTENEGRO": "CS", "SEYCHELLES": "SC", "SIERRA LEONE": "SL", "SINGAPOUR": "SG", "SLOVAQUIE": "SK", "SLOVENIE": "SI", "SOUDAN": "SD", "SRI LANKA": "LK", "SUISSE": "CH",
     "SURINAME": "SR", "SUEDE": "SE", "SYRIE": "SY", "TAIWAN": "TW", "TANZANIE": "TZ", "TCHEQUE (REP.)": "CZ", "THAILANDE": "TH", "TOGO": "TG", "TRINITE-ET-TOBAGO": "TT", "TUNISIE": "TN", "TURQUIE": "TR", "UK": "GB", "UKRAINE": "UA",
-    "UNKNOWN": "XX", "URUGUAY": "UY"}
+    "UNKNOWN": "XX", "URUGUAY": "UY", "USA": "US", "VIETNAM": "VN", "YEMEN": "YE", "ZAMBIE": "ZM" }
     
     inserted_countries = 0
     for c in all_countries:
