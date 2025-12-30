@@ -1616,36 +1616,37 @@ def populate_fact(*args, **kwargs):
     Rules:
     - Mandatory dimensions: date, country, fatality
     - Optional dimensions: industry, accident_type, hazard, employer
-    - Every prep row represents exactly ONE accident/fatality
+    - Each prep row represents exactly ONE accident/fatality
     """
+    import psycopg2.extras
+    import pandas as pd
 
     conn = pg_connect()
     cur = conn.cursor()
 
     print("▶ START: Populate Fact Table")
 
-    # -------------------------------------------------
-    # Load prep tables (with source tracking)
-    # -------------------------------------------------
+    # ----------------------------
+    # Load prep tables with source tracking
+    # ----------------------------
     df_aria = pd.read_sql("SELECT *, 'aria' AS __source FROM ariadb_prep", conn)
     df_work = pd.read_sql("SELECT *, 'work' AS __source FROM workaccidents_prep", conn)
     df_fatal = pd.read_sql("SELECT *, 'fatal' AS __source FROM fatalities_prep", conn)
 
     df_fact = pd.concat([df_aria, df_work, df_fatal], ignore_index=True)
-
     print(f"Combined prep tables: {len(df_fact)} rows")
     print("Sample prep sources distribution:")
     print(df_fact["__source"].value_counts())
 
-    # -------------------------------------------------
+    # ----------------------------
     # Normalize mandatory join columns
-    # -------------------------------------------------
+    # ----------------------------
     df_fact["date"] = df_fact["date"].astype(str).str.strip()
     df_fact["country"] = df_fact["country"].astype(str).str.strip().str.upper()
 
-    # -------------------------------------------------
-    # Load dimensions
-    # -------------------------------------------------
+    # ----------------------------
+    # Load dimension tables
+    # ----------------------------
     dim_date = pd.read_sql("SELECT date_id, date FROM dim_date", conn)
     dim_country = pd.read_sql("SELECT country_id, country_name FROM dim_country", conn)
     dim_industry = pd.read_sql("SELECT industry_id, industry_code FROM dim_industry", conn)
@@ -1656,18 +1657,16 @@ def populate_fact(*args, **kwargs):
 
     if dim_fatality.empty:
         raise RuntimeError("dim_fatality is empty – cannot populate fact table")
-
     fatality_id = int(dim_fatality.iloc[0]["fatality_id"])
 
-    # Normalize dimension join keys
+    # Normalize dimension keys
     dim_country["country_name"] = dim_country["country_name"].astype(str).str.strip().str.upper()
     dim_date["date"] = dim_date["date"].astype(str).str.strip()
 
-    # -------------------------------------------------
-    # Merge dimensions (LEFT JOIN – optional-safe)
-    # -------------------------------------------------
+    # ----------------------------
+    # Merge dimensions (LEFT JOIN to preserve all prep rows)
+    # ----------------------------
     print("Merging dimension tables into prep data...")
-
     df_fact = df_fact.merge(dim_date, how="left", on="date")
     df_fact = df_fact.merge(dim_country, how="left", left_on="country", right_on="country_name")
     df_fact = df_fact.merge(dim_industry, how="left", on="industry_code")
@@ -1675,55 +1674,54 @@ def populate_fact(*args, **kwargs):
     df_fact = df_fact.merge(dim_hazard, how="left", on="hazard_class")
     df_fact = df_fact.merge(dim_employer, how="left", on="employer")
 
-    # Assign fatality_id explicitly (single-row dimension)
+    # Assign fatality_id (single-row dimension)
     df_fact["fatality_id"] = fatality_id
 
-    # -------------------------------------------------
-    # Define mandatory vs optional foreign keys
-    # -------------------------------------------------
-    mandatory_fk_cols = ["date_id", "country_id", "fatality_id"]
-    optional_fk_cols = [
-        "industry_id",
-        "accident_type_id",
-        "hazard_id",
-        "employer_id"
-    ]
+    # ----------------------------
+    # Ensure optional FK columns exist
+    # ----------------------------
+    optional_fk_cols = ["industry_id", "accident_type_id", "hazard_id", "employer_id"]
+    for col in optional_fk_cols:
+        if col not in df_fact.columns:
+            df_fact[col] = None
 
+    # ----------------------------
+    # Define mandatory vs optional FKs
+    # ----------------------------
+    mandatory_fk_cols = ["date_id", "country_id", "fatality_id"]
     fact_cols = mandatory_fk_cols + optional_fk_cols
 
-    # -------------------------------------------------
+    # ----------------------------
     # FK diagnostics
-    # -------------------------------------------------
+    # ----------------------------
     missing_fk_counts = df_fact[fact_cols].isna().sum()
     print("Missing foreign keys count per column:")
     print(missing_fk_counts)
 
-    # -------------------------------------------------
-    # Drop rows missing ONLY mandatory FKs
-    # -------------------------------------------------
+    # ----------------------------
+    # Drop rows missing mandatory FKs
+    # ----------------------------
     df_fact_final = df_fact[fact_cols].dropna(subset=mandatory_fk_cols)
+    print(f"Rows prepared for insert after dropping missing mandatory FKs: {len(df_fact_final)}")
 
-    print(
-        f"Rows prepared for insert after dropping missing mandatory FKs: "
-        f"{len(df_fact_final)}"
-    )
-
-    # ----------------------------
-    # DEBUG: Preview first 10 rows to insert
-    # ----------------------------
-    if not df_fact_final.empty:
-        print("Preview of first 10 rows to be inserted into fact_accidents:")
-        print(df_fact_final.head(10))
-    else:
-        print("⚠️ fact_accidents rows empty – no eligible rows for insertion")
+    if df_fact_final.empty:
+        print("⚠️ Fact_accidents rows empty – nothing to insert")
         conn.close()
         return
 
-    # -------------------------------------------------
-    # Bulk insert
-    # -------------------------------------------------
-    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
+    # ----------------------------
+    # Replace NaN with None for optional FKs
+    # ----------------------------
+    df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
 
+    # Debug: print first 10 rows to insert
+    print("Preview of first 10 rows to be inserted into fact_accidents:")
+    print(df_fact_final.head(10))
+
+    # ----------------------------
+    # Bulk insert
+    # ----------------------------
+    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
     insert_sql = """
         INSERT INTO fact_accidents (
             date_id,
@@ -1735,7 +1733,6 @@ def populate_fact(*args, **kwargs):
             employer_id
         ) VALUES %s
     """
-
     psycopg2.extras.execute_values(
         cur,
         insert_sql,
