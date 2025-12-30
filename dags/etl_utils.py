@@ -1705,44 +1705,50 @@ def populate_fact(*args, **kwargs):
     print(f"Rows prepared for insert after dropping missing mandatory FKs: {len(df_fact_final)}")
 
     if df_fact_final.empty:
-        print("⚠️ Fact_accidents rows empty – nothing to insert")
+        print(" Fact_accidents rows empty – nothing to insert")
         conn.close()
         return
-
+    
     # ----------------------------
     # Replace NaN with None for optional FKs
     # ----------------------------
     df_fact_final = df_fact_final.where(pd.notnull(df_fact_final), None)
 
-    # Debug: print first 10 rows to insert
-    print("Preview of first 10 rows to be inserted into fact_accidents:")
-    print(df_fact_final.head(10))
+    # ----------------------------
+    # Debug: preview first 10 rows as tuples
+    # ----------------------------
+    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
+    if rows_to_insert:
+        print("Preview of first 10 rows to be inserted into fact_accidents:")
+        for r in rows_to_insert[:10]:
+            print(r)
+    else:
+        print(" fact_accidents rows empty - nothing to insert")
 
     # ----------------------------
     # Bulk insert
     # ----------------------------
-    rows_to_insert = [tuple(row) for row in df_fact_final.to_numpy()]
-    insert_sql = """
-        INSERT INTO fact_accidents (
-            date_id,
-            country_id,
-            fatality_id,
-            industry_id,
-            accident_type_id,
-            hazard_id,
-            employer_id
-        ) VALUES %s
-    """
-    psycopg2.extras.execute_values(
-        cur,
-        insert_sql,
-        rows_to_insert,
-        page_size=1000
-    )
+    if rows_to_insert:
+        insert_sql = """
+            INSERT INTO fact_accidents (
+                date_id,
+                country_id,
+                fatality_id,
+                industry_id,
+                accident_type_id,
+                hazard_id,
+                employer_id
+            ) VALUES %s
+        """
+        psycopg2.extras.execute_values(
+            cur,
+            insert_sql,
+            rows_to_insert,
+            page_size=1000
+        )
 
     conn.commit()
     conn.close()
-
     print(f"✔ Fact table populated successfully with {len(rows_to_insert)} rows")
 
 
