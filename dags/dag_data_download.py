@@ -14,6 +14,7 @@ from etl_utils import (
     download_all_fatalities,
     download_and_extract_zip,
     CSV_URL,
+    ZIP_URL,
     DATA_DIR
 )
 
@@ -28,7 +29,7 @@ def task_download_fatalities():
         print(f"✔ Fatalities file downloaded: {f}")
 
 def task_download_workaccidents():
-    csv_path = download_and_extract_zip()
+    csv_path = download_and_extract_zip(ZIP_URL)
     print(f"✔ Workaccidents CSV downloaded/extracted to {csv_path}")
 
 with DAG(
