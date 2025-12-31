@@ -202,10 +202,7 @@ def clean_column_names(df):
 
 
 # =====================================================================================
-# DOWNLOAD UTILITIES HELPERS
-# =====================================================================================
-
-def download_csv(URL, filename):
+# DOWNLOAD UTILITIES HELPERS_download_csv(URL, filename):
     filepath = os.path.join(DATA_DIR, filename)
     print(f"📥 Trying download: {URL}")
     try:
@@ -655,6 +652,7 @@ def download_and_extract_zip(zip_url=None):
     url = zip_url or ZIP_URL
     filename = os.path.basename(url)
     filepath = os.path.join(DATA_DIR, filename)
+
     try:
         r = requests.get(url, timeout=60)
         r.raise_for_status()
@@ -663,12 +661,18 @@ def download_and_extract_zip(zip_url=None):
         if not os.path.exists(filepath):
             raise
         zip_bytes = open(filepath, "rb")
+
     with ZipFile(zip_bytes) as zf:
         csv_files = [f for f in zf.namelist() if f.lower().endswith(".csv")]
-        with zf.open(csv_files[0]) as f:
-            return f.read().decode("utf-8", errors="ignore")
+        csv_name = csv_files[0]
+        csv_path = os.path.join(DATA_DIR, csv_name)
+        with zf.open(csv_name) as f:
+            csv_data = f.read().decode("utf-8", errors="ignore")
+            # Write to DATA_DIR
+            with open(csv_path, "w", encoding="utf-8") as out_f:
+                out_f.write(csv_data)
 
-
+ 
 # ==========================================================================================================
 # DAG_DATA_CLEAN FUNCTIONS: 1. create_ariadb_clean, 2. create_workaccidents_clean, 3.create_fatalities_clean
 # Data cleaning functions for ARIADB, Workaccidents, and Fatalities datasets
