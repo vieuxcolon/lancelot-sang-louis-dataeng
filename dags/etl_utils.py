@@ -648,31 +648,57 @@ def clean_fatalities_6_to_9(file, out):
 # Download the zip file and unzip it to the landing zone 
 # =========================================================================================================
 
-def download_and_extract_zip(zip_url=None):
-    url = zip_url or ZIP_URL
-    filename = os.path.basename(url)
-    filepath = os.path.join(DATA_DIR, filename)
+# =================== etl_utils.py ===================
+from io import BytesIO
+from zipfile import ZipFile
+import os
+import requests
 
-    try:
+# Make sure these are defined somewhere in your etl_utils.py
+DATA_DIR = "/opt/airflow/data"
+ZIP_URL = "https://example.com/workaccidents.zip"  # replace with real URL
+
+def download_and_extract_zip(zip_url=None):
+    """
+    Downloads a ZIP from `zip_url` and extracts the first CSV inside it.
+    Always writes the CSV to DATA_DIR as 'workaccidents.csv'.
+    Returns the full path to the CSV.
+    """
+    url = zip_url
+    filename = os.path.basename(url)
+    zip_path = os.path.join(DATA_DIR, filename)
+
+    # Ensure DATA_DIR exists
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Download the ZIP if not already present
+    if not os.path.exists(zip_path):
+        print(f"[INFO] Downloading ZIP from {url} → {zip_path}")
         r = requests.get(url, timeout=60)
         r.raise_for_status()
-        zip_bytes = BytesIO(r.content)
-    except Exception:
-        if not os.path.exists(filepath):
-            raise
-        zip_bytes = open(filepath, "rb")
+        with open(zip_path, "wb") as f:
+            f.write(r.content)
+    else:
+        print(f"[INFO] Using existing ZIP file: {zip_path}")
 
-    with ZipFile(zip_bytes) as zf:
+    # Extract the first CSV
+    with ZipFile(zip_path, "r") as zf:
         csv_files = [f for f in zf.namelist() if f.lower().endswith(".csv")]
-        csv_name = csv_files[0]
-        csv_path = os.path.join(DATA_DIR, csv_name)
-        with zf.open(csv_name) as f:
+        if not csv_files:
+            raise FileNotFoundError(f"No CSV found in ZIP: {zip_path}")
+
+        csv_name_in_zip = csv_files[0]
+        csv_path = os.path.join(DATA_DIR, "workaccidents.csv")  # <-- always this name
+
+        with zf.open(csv_name_in_zip) as f:
             csv_data = f.read().decode("utf-8", errors="ignore")
-            # Write to DATA_DIR
             with open(csv_path, "w", encoding="utf-8") as out_f:
                 out_f.write(csv_data)
+
+    print(f"[INFO] Extracted CSV from ZIP: {csv_name_in_zip} → {csv_path}")
     return csv_path
- 
+
+
 # ==========================================================================================================
 # DAG_DATA_CLEAN FUNCTIONS: 1. create_ariadb_clean, 2. create_workaccidents_clean, 3.create_fatalities_clean
 # Data cleaning functions for ARIADB, Workaccidents, and Fatalities datasets
