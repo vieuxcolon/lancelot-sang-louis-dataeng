@@ -671,7 +671,7 @@ def download_and_extract_zip(zip_url=None):
             # Write to DATA_DIR
             with open(csv_path, "w", encoding="utf-8") as out_f:
                 out_f.write(csv_data)
-
+    return csv_path
  
 # ==========================================================================================================
 # DAG_DATA_CLEAN FUNCTIONS: 1. create_ariadb_clean, 2. create_workaccidents_clean, 3.create_fatalities_clean
