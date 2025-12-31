@@ -110,7 +110,7 @@ services:
       ME_CONFIG_MONGODB_SERVER: mongo
       ME_CONFIG_MONGODB_PORT: "${ME_CONFIG_MONGODB_PORT}"
     ports:
-      - "${ME_PORT}:8085"
+      - "${ME_PORT}:8081"
     depends_on:
       - mongo
     restart: always

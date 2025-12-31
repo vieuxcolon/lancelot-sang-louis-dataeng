@@ -9,7 +9,7 @@ sudo apt update -y
 
 # 2. Install required packages
 echo "Installing git, docker, docker-compose, python3, pip..."
-sudo apt install -y git docker.io docker-compose python3 python3-pip
+sudo apt install -y git docker.io docker-compose docker-compose-plugin python3 python3-pip
 
 # 3. Enable and start Docker
 echo "Enabling and starting Docker..."
@@ -59,7 +59,7 @@ sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 
 echo " EC2 ETL setup completed successfully!"
 echo "Next steps:"
-echo "1. Access Airflow UI: http://<EC2_PUBLIC_IP>:8080 (use .env credentials)"
-echo "2. Access Mongo Express: http://<EC2_PUBLIC_IP>:8085"
-echo "3. Access PGAdmin: http://<EC2_PUBLIC_IP>:5050"
+echo "1. Access Airflow UI: http://34.249.33.113:8080 (use .env credentials)"
+echo "2. Access Mongo Express: http://34.249.33.113:8085"
+echo "3. Access PGAdmin: http://34.249.33.113:5050"
 echo "4. Connect to Postgres from your scripts using .env credentials"
