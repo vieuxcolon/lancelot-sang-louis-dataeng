@@ -41,10 +41,6 @@ apache-airflow-providers-apache-druid==4.2.1
 pycountry==22.3.5
 psycopg2-binary==2.9.9
 
-# ==========================
-# AWS Integration
-# ==========================
-boto3==1.30.24
 
 # ==========================
 # Utilities
