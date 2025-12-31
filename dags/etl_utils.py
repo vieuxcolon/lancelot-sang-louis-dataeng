@@ -648,15 +648,6 @@ def clean_fatalities_6_to_9(file, out):
 # Download the zip file and unzip it to the landing zone 
 # =========================================================================================================
 
-# =================== etl_utils.py ===================
-from io import BytesIO
-from zipfile import ZipFile
-import os
-import requests
-
-# Make sure these are defined somewhere in your etl_utils.py
-DATA_DIR = "/opt/airflow/data"
-ZIP_URL = "https://example.com/workaccidents.zip"  # replace with real URL
 
 def download_and_extract_zip(zip_url=None):
     """
