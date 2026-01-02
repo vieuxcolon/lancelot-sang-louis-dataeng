@@ -1031,10 +1031,9 @@ def load_fatalities_to_postgres():
 
 def create_fatalities_csv():
     """
-    Merges fatalities_1.csv … fatalities_9.csv into a single fatalities.csv.
-    Uses read_csv_safe for robust encoding handling.
-    Drops garbage rows (every 2nd row) for files 1-4.
-    Normalizes column names using clean_column_names().
+    Merge all 9 fatalities source CSVs into one fatalities.csv.
+    Drops the 2nd row (index 1) only once for files 1–4.
+    Preserves all other columns and rows.
     Returns the path to the merged CSV.
     """
     sources = [
@@ -1051,31 +1050,37 @@ def create_fatalities_csv():
 
     dfs = []
 
-    for fname, drop_garbage in sources:
+    for fname, drop_second_row in sources:
         path = os.path.join(DATA_DIR, fname)
+        if not os.path.exists(path):
+            print(f"[WARN] Source file not found: {path}")
+            continue
 
-        # robust read
+        # robust read to handle encoding issues
         df = read_csv_safe(path)
 
-        # drop garbage rows for files 1–4
-        if drop_garbage:
-            df = df.iloc[::2]
+        # Drop only the 2nd row (index 1) once for files 1–4
+        if drop_second_row and len(df) > 1:
+            df = df.drop(df.index[1])
 
-        # normalize column names
-        df = clean_column_names(df)
-
-        # rename company_city_state_zip to employer_address
-        df = df.rename(columns={"company_city_state_zip": "employer_address"})
+        # Rename company_city_state_zip column if exists
+        if "Company, City, State, ZIP" in df.columns:
+            df = df.rename(columns={"Company, City, State, ZIP": "employer_address"})
 
         dfs.append(df)
 
-    # merge all files
-    merged_df = pd.concat(dfs, ignore_index=True)
+    if not dfs:
+        raise RuntimeError("No source fatalities files found!")
 
-    merged_csv_path = os.path.join(DATA_DIR, "fatalities.csv")
-    merged_df.to_csv(merged_csv_path, index=False)
+    # Merge all source DataFrames
+    final_df = pd.concat(dfs, ignore_index=True)
 
-    return merged_csv_path
+    # Write merged CSV
+    fatalities_csv_path = os.path.join(DATA_DIR, "fatalities.csv")
+    final_df.to_csv(fatalities_csv_path, index=False)
+    print(f"[INFO] fatalities.csv created: {fatalities_csv_path} ({len(final_df)} rows)")
+
+    return fatalities_csv_path
 
 
 def create_fatalities_clean():
