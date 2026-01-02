@@ -1028,9 +1028,130 @@ def load_fatalities_to_postgres():
 # =====================================================================================
 # READ FATALITIES CLEAN FILES AND CREATE FINAL COMBINED TABLE
 # =====================================================================================
-def create_fatalities_clean():
-    print("=== Cleaning fatalities files ===")
 
+
+def create_fatalities_csv():
+    """
+    Merge all 9 fatalities source CSVs into a single fatalities.csv in DATA_DIR,
+    with all possible columns, dropping garbage rows for files 1-4,
+    and renaming company_city_state_zip to employer_address.
+    """
+    print("=== Building fatalities.csv ===")
+
+    sources = [
+        ("fatalities_1.csv", True),
+        ("fatalities_2.csv", True),
+        ("fatalities_3.csv", True),
+        ("fatalities_4.csv", True),
+        ("fatalities_5.csv", False),
+        ("fatalities_6.csv", False),
+        ("fatalities_7.csv", False),
+        ("fatalities_8.csv", False),
+        ("fatalities_9.csv", False),
+    ]
+
+    final_columns = [
+        "fiscal_year",
+        "summary_report_date",
+        "date_of_incident",
+        "employer_address",
+        "company",
+        "victims",
+        "hazard_description",
+        "preliminary_description",
+        "fatality_or_catastrophe",
+        "inspection_number"
+    ]
+
+    merged_dfs = []
+
+    for idx, (fname, drop_every_2nd) in enumerate(sources, start=1):
+        path = os.path.join(DATA_DIR, fname)
+        if not os.path.exists(path):
+            print(f"WARNING: source file {fname} not found, skipping.")
+            continue
+
+        df = pd.read_csv(path, sep=",", quotechar='"', engine="python")
+
+        if drop_every_2nd:
+            df = df.iloc[::2].reset_index(drop=True)
+
+        rename_map = {}
+        if "Date of Incident" in df.columns:
+            rename_map["Date of Incident"] = "date_of_incident"
+        if "Employer/Address of Incident" in df.columns:
+            rename_map["Employer/Address of Incident"] = "employer_address"
+        if "Company, City, State, ZIP" in df.columns:
+            rename_map["Company, City, State, ZIP"] = "employer_address"
+        if "Company" in df.columns:
+            rename_map["Company"] = "company"
+        if "Victim(s)" in df.columns:
+            rename_map["Victim(s)"] = "victims"
+        if "Hazard Description" in df.columns:
+            rename_map["Hazard Description"] = "hazard_description"
+        if "Preliminary Description of Incident" in df.columns:
+            rename_map["Preliminary Description of Incident"] = "preliminary_description"
+        if "Fatality or Catastrophe" in df.columns:
+            rename_map["Fatality or Catastrophe"] = "fatality_or_catastrophe"
+        if "Inspection #" in df.columns:
+            rename_map["Inspection #"] = "inspection_number"
+        if "Fiscal Year" in df.columns:
+            rename_map["Fiscal Year"] = "fiscal_year"
+        if "Summary Report Date" in df.columns:
+            rename_map["Summary Report Date"] = "summary_report_date"
+
+        df = df.rename(columns=rename_map)
+
+        # Ensure all final columns exist
+        for col in final_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[final_columns]
+
+        merged_dfs.append(df)
+
+    if not merged_dfs:
+        raise RuntimeError("No fatalities files found to merge.")
+
+    final_df = pd.concat(merged_dfs, ignore_index=True)
+
+    # Save CSV
+    fatalities_csv_path = os.path.join(DATA_DIR, "fatalities.csv")
+    final_df.to_csv(fatalities_csv_path, index=False)
+    print(f"fatalities.csv created ({len(final_df)} rows)")
+    return fatalities_csv_path  # return path for downstream use
+
+def create_fatalities_clean():
+    print("=== Creating fatalities_clean ===")
+
+    # Step 0: build raw fatalities.csv
+    fatalities_csv_path = create_fatalities_csv()
+
+    # Step 1: Load raw fatalities into Postgres
+    print("=== Loading raw fatalities into Postgres ===")
+    final_df = pd.read_csv(fatalities_csv_path)
+
+    conn = pg_connect()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS fatalities")
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in final_df.columns])
+    cur.execute(f"CREATE TABLE fatalities ({col_defs})")
+
+    insert_sql = f"""
+        INSERT INTO fatalities ({", ".join([f'"{c}"' for c in final_df.columns])})
+        VALUES ({", ".join(["%s"] * len(final_df.columns))})
+    """
+
+    for _, r in final_df.iterrows():
+        cur.execute(insert_sql, [None if pd.isna(v) else str(v) for v in r.values])
+
+    conn.commit()
+    conn.close()
+    print(f"Raw fatalities table created ({len(final_df)} rows)")
+
+    # Step 2: Existing cleaning logic remains unchanged
+    print("=== Cleaning fatalities files for fatalities_clean ===")
     cleaners = [
         ("fatalities_1.csv", clean_fatalities_1_2),
         ("fatalities_2.csv", clean_fatalities_1_2),
@@ -1055,33 +1176,12 @@ def create_fatalities_clean():
     if not dfs:
         raise RuntimeError("No fatalities files cleaned")
 
-    final_df = pd.concat(dfs, ignore_index=True)
-
-    # RAW TABLE
-    conn = pg_connect()
-    cur = conn.cursor()
-    cur.execute("DROP TABLE IF EXISTS fatalities")
-    col_defs = ", ".join([f'"{c}" TEXT' for c in final_df.columns])
-    cur.execute(f"CREATE TABLE fatalities ({col_defs})")
-
-    insert_sql = f"""
-        INSERT INTO fatalities ({", ".join([f'"{c}"' for c in final_df.columns])})
-        VALUES ({", ".join(["%s"] * len(final_df.columns))})
-    """
-
-    for _, r in final_df.iterrows():
-        cur.execute(insert_sql, [None if pd.isna(v) else str(v) for v in r.values])
-
-    conn.commit()
-    conn.close()
-    print(f"Raw fatalities table created ({len(final_df)} rows)")
-
-    # CLEAN
-    final_df = normalize_country(final_df)
-    final_df.to_csv(os.path.join(DATA_DIR, "fatalities_clean.csv"), index=False)
+    final_df_clean = pd.concat(dfs, ignore_index=True)
+    final_df_clean = normalize_country(final_df_clean)
+    final_df_clean.to_csv(os.path.join(DATA_DIR, "fatalities_clean.csv"), index=False)
     load_fatalities_to_postgres()
 
-    
+
 # ==========================================================================================================
 # DAG_DATA_PREP FUNCTIONS:  1. create_ariadb_prep, 2. create_workaccidents_clean 2. create_fatalities_prep
 # Data preparation functions for star schema source tables
