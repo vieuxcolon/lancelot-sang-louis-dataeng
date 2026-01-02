@@ -1928,47 +1928,19 @@ No regression overwrites. Uses current dimension and fact table schemas.
 
 def run_analytics_validation():
     """
-    Run a full set of analytics queries on the current star schema.
-    Uses current dimension and fact table columns and types.
+    Run analytics queries and generate a dynamic HTML page for Airflow UI.
+    Saves both individual query results and a combined HTML report in the
+    analytics_results folder accessible from Airflow.
     """
 
-    # 1. Open DB connection
     conn = pg_connect()
 
     try:
-        # 2. Log database connection identity
-        identity_df = pd.read_sql(
-            """
-            SELECT
-                current_user,
-                session_user,
-                current_database(),
-                current_schema();
-            """,
-            conn
-        )
-        print(" Database connection identity:")
-        print(identity_df.to_string(index=False))
+        # Ensure results directory exists
+        ANALYTICS_DATA_DIR = "/opt/airflow/data/analytics_results"
+        os.makedirs(ANALYTICS_DATA_DIR, exist_ok=True)
 
-        # 3. Force schema visibility
-        cur = conn.cursor()
-        cur.execute("SET search_path TO public;")
-        cur.close()
-
-        # 4. Validate dim_date exists and has data
-        dim_check = pd.read_sql(
-            "SELECT COUNT(*) AS row_count FROM dim_date;",
-            conn
-        )
-
-        if dim_check.loc[0, "row_count"] == 0:
-            raise RuntimeError(
-                " dim_date is visible but empty — analytics validation aborted."
-            )
-
-        print(" dim_date table is visible and populated. Proceeding with analytics.")
-
-        # 5. Define analytics queries
+        # Define analytics queries
         queries = {
             "1_fatalities_by_year": """
                 SELECT
@@ -1979,7 +1951,6 @@ def run_analytics_validation():
                 GROUP BY d.date
                 ORDER BY d.date
             """,
-
             "2_fatalities_by_country": """
                 SELECT
                     c.country_name AS country,
@@ -1989,7 +1960,6 @@ def run_analytics_validation():
                 GROUP BY c.country_name
                 ORDER BY total_fatalities DESC
             """,
-
             "3_fatalities_by_industry": """
                 SELECT
                     i.industry_code AS industry,
@@ -1999,7 +1969,6 @@ def run_analytics_validation():
                 GROUP BY i.industry_code
                 ORDER BY total_fatalities DESC
             """,
-
             "4_france_vs_usa_last_10_years": """
                 SELECT
                     d.date AS year,
@@ -2014,7 +1983,6 @@ def run_analytics_validation():
                 GROUP BY d.date
                 ORDER BY d.date
             """,
-
             "5_top_10_countries_fatalities": """
                 SELECT
                     c.country_name,
@@ -2026,7 +1994,6 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
-
             "6_top_10_industries_fatalities": """
                 SELECT
                     i.industry_code,
@@ -2039,7 +2006,6 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
-
             "7_top_10_employers_fatalities": """
                 SELECT
                     e.employer,
@@ -2052,7 +2018,6 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
-
             "8_recent_10_year_fatalities_by_country": """
                 SELECT
                     c.country_name,
@@ -2065,7 +2030,6 @@ def run_analytics_validation():
                 ORDER BY total_fatalities DESC
                 LIMIT 10
             """,
-
             "9_fatalities_trend_by_industry_last_10_years": """
                 SELECT
                     d.date AS year,
@@ -2082,28 +2046,34 @@ def run_analytics_validation():
             """
         }
 
-        # 6. Execute analytics queries and save results
-        ANALYTICS_DATA_DIR = "/opt/airflow/data/analytics_results"
-        os.makedirs(ANALYTICS_DATA_DIR, exist_ok=True)
+        html_parts = []
+        html_parts.append("<html><head><title>Analytics Validation Results</title></head><body>")
+        html_parts.append("<h1>Analytics Validation Results</h1>")
 
+        # Execute queries and append HTML tables
         for name, query in queries.items():
             df = pd.read_sql(query, conn)
-            file_path = os.path.join(ANALYTICS_DATA_DIR, f"{name}.txt")
 
+            # Save individual TXT file as before
+            file_path = os.path.join(ANALYTICS_DATA_DIR, f"{name}.txt")
             with open(file_path, "w") as f:
-                f.write(f"Query Title:\n{name}\n\n")
-                f.write("Query SQL:\n")
-                f.write("-" * 50 + "\n")
-                f.write(query.strip() + "\n\n")
-                f.write("Query Results:\n")
-                f.write("=" * 50 + "\n")
+                f.write(f"Query Title:\n{name}\n\nQuery SQL:\n{'-'*50}\n{query.strip()}\n\nQuery Results:\n{'='*50}\n")
                 f.write(df.to_string(index=False))
 
-            print(f" Saved analytics result: {file_path}")
+            # Append HTML for this query
+            html_parts.append(f"<h2>{name}</h2>")
+            html_parts.append("<pre>SQL:\n" + query.strip() + "</pre>")
+            html_parts.append(df.to_html(index=False, border=1))
 
-        print(" All analytics validation queries executed successfully.")
+        html_parts.append("</body></html>")
+
+        html_path = os.path.join(ANALYTICS_DATA_DIR, "analytics_results.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(html_parts))
+
+        print(f"All queries executed. Dynamic HTML results saved at: {html_path}")
 
     finally:
-        # 7️⃣ Close connection safely
         conn.close()
+
 
