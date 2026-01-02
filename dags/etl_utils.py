@@ -1029,14 +1029,13 @@ def load_fatalities_to_postgres():
 # READ FATALITIES CLEAN FILES AND CREATE FINAL COMBINED TABLE
 # =====================================================================================
 
-import os
-import pandas as pd
-from etl_utils import DATA_DIR
-
 def create_fatalities_csv():
     """
-    Reads all 9 raw fatalities CSVs, handles encodings, merges into a single fatalities.csv
-    Drops garbage rows for files 1-4 and keeps all columns from all sources.
+    Merges fatalities_1.csv … fatalities_9.csv into a single fatalities.csv.
+    Uses read_csv_safe for robust encoding handling.
+    Drops garbage rows (every 2nd row) for files 1-4.
+    Normalizes column names using clean_column_names().
+    Returns the path to the merged CSV.
     """
     sources = [
         ("fatalities_1.csv", True),
@@ -1050,75 +1049,65 @@ def create_fatalities_csv():
         ("fatalities_9.csv", False),
     ]
 
-    all_dfs = []
+    dfs = []
 
-    for i, (fname, drop_garbage) in enumerate(sources, start=1):
+    for fname, drop_garbage in sources:
         path = os.path.join(DATA_DIR, fname)
-        if not os.path.exists(path):
-            print(f"[WARNING] Source file missing: {fname}, skipping.")
-            continue
 
-        # Robust CSV reading
-        encodings_to_try = ["utf-8", "utf-16", "utf-8-sig", "windows-1252"]
-        for enc in encodings_to_try:
-            try:
-                df = pd.read_csv(path, sep=",", quotechar='"', engine="python", encoding=enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            raise UnicodeDecodeError(f"Cannot read file {fname} with tried encodings.")
+        # robust read
+        df = read_csv_safe(path)
 
-        # Drop garbage row every 2nd row for files 1–4
+        # drop garbage rows for files 1–4
         if drop_garbage:
-            df = df.iloc[1::2]  # keeps every other row starting from index 1
+            df = df.iloc[::2]
 
-        # Standardize column names for superset
-        df_columns = list(df.columns)
-        # Rename columns where necessary
-        col_rename_map = {}
-        if "Company, City, State, ZIP" in df_columns:
-            col_rename_map["Company, City, State, ZIP"] = "employer_address"
-        if "Company" in df_columns:
-            col_rename_map["Company"] = "company"
-        if "Employer/Address of Incident " in df_columns:
-            col_rename_map["Employer/Address of Incident "] = "employer_address"
-        if "Victim(s) " in df_columns:
-            col_rename_map["Victim(s) "] = "victims"
-        if "Hazard Description " in df_columns:
-            col_rename_map["Hazard Description "] = "hazard"
-        if "Fatality or Catastrophe " in df_columns:
-            col_rename_map["Fatality or Catastrophe "] = "fatality"
-        if "Inspection # " in df_columns:
-            col_rename_map["Inspection # "] = "inspection"
+        # normalize column names
+        df = clean_column_names(df)
 
-        df.rename(columns=col_rename_map, inplace=True)
+        # rename company_city_state_zip to employer_address
+        df = df.rename(columns={"company_city_state_zip": "employer_address"})
 
-        # Keep all columns as text
-        df = df.astype(str)
+        dfs.append(df)
 
-        all_dfs.append(df)
+    # merge all files
+    merged_df = pd.concat(dfs, ignore_index=True)
 
-    if not all_dfs:
-        raise RuntimeError("No fatalities files were processed successfully.")
+    merged_csv_path = os.path.join(DATA_DIR, "fatalities.csv")
+    merged_df.to_csv(merged_csv_path, index=False)
 
-    # Merge all files (union of all columns)
-    final_df = pd.concat(all_dfs, ignore_index=True, sort=False)
+    return merged_csv_path
 
-    # Save merged CSV
-    out_csv = os.path.join(DATA_DIR, "fatalities.csv")
-    final_df.to_csv(out_csv, index=False)
-    print(f"[INFO] fatalities.csv created ({len(final_df)} rows, {len(final_df.columns)} columns)")
-    return out_csv
 
 def create_fatalities_clean():
     print("=== Cleaning fatalities files ===")
 
-    # Step 1️⃣: Build merged fatalities.csv (raw layer)
-    from etl_utils import create_fatalities_csv  # ensure the function is imported
-    fatalities_csv = create_fatalities_csv()      # creates DATA_DIR/fatalities.csv
+    # --- STEP 1: Build merged fatalities.csv ---
+    fatalities_csv_path = create_fatalities_csv()
+    print(f"=== Merged fatalities CSV created: {fatalities_csv_path} ===")
 
-    # Step 2️⃣: Process cleaned files as before
+    # --- STEP 2: Load merged CSV into Postgres as raw table ---
+    merged_df = pd.read_csv(fatalities_csv_path)
+
+    conn = pg_connect()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS fatalities")
+
+    col_defs = ", ".join([f'"{c}" TEXT' for c in merged_df.columns])
+    cur.execute(f"CREATE TABLE fatalities ({col_defs})")
+
+    insert_sql = f"""
+        INSERT INTO fatalities ({", ".join([f'"{c}"' for c in merged_df.columns])})
+        VALUES ({", ".join(["%s"] * len(merged_df.columns))})
+    """
+
+    for _, r in merged_df.iterrows():
+        cur.execute(insert_sql, [None if pd.isna(v) else str(v) for v in r.values])
+
+    conn.commit()
+    conn.close()
+    print(f"Raw fatalities table created ({len(merged_df)} rows)")
+
+    # --- STEP 3: Build fatalities_clean as before ---
     cleaners = [
         ("fatalities_1.csv", clean_fatalities_1_2),
         ("fatalities_2.csv", clean_fatalities_1_2),
@@ -1131,44 +1120,24 @@ def create_fatalities_clean():
         ("fatalities_9.csv", clean_fatalities_6_to_9),
     ]
 
-    dfs = []
+    dfs_clean = []
     for fname, fn in cleaners:
         src = os.path.join(DATA_DIR, fname)
         dst = os.path.join(DATA_DIR, fname.replace(".csv", "_clean.csv"))
         if not os.path.exists(src):
             continue
         fn(src, dst)
-        dfs.append(pd.read_csv(dst))
+        dfs_clean.append(pd.read_csv(dst))
 
-    if not dfs:
+    if not dfs_clean:
         raise RuntimeError("No fatalities files cleaned")
 
-    final_df = pd.concat(dfs, ignore_index=True)
+    final_df_clean = pd.concat(dfs_clean, ignore_index=True)
 
-    # Step 3️⃣: Create RAW fatalities table in Postgres
-    conn = pg_connect()
-    cur = conn.cursor()
-    cur.execute("DROP TABLE IF EXISTS fatalities")
-
-    col_defs = ", ".join([f'"{c}" TEXT' for c in pd.read_csv(fatalities_csv).columns])
-    cur.execute(f"CREATE TABLE fatalities ({col_defs})")
-
-    raw_df = pd.read_csv(fatalities_csv).astype(str)
-    insert_sql = f"""
-        INSERT INTO fatalities ({", ".join([f'"{c}"' for c in raw_df.columns])})
-        VALUES ({", ".join(["%s"] * len(raw_df.columns))})
-    """
-    for _, r in raw_df.iterrows():
-        cur.execute(insert_sql, [None if pd.isna(v) else str(v) for v in r.values])
-
-    conn.commit()
-    conn.close()
-    print(f"[INFO] Raw fatalities table created ({len(raw_df)} rows)")
-
-    # Step 4️⃣: Continue with cleaned CSV and load as before
-    final_df = normalize_country(final_df)
-    final_df.to_csv(os.path.join(DATA_DIR, "fatalities_clean.csv"), index=False)
+    final_df_clean = normalize_country(final_df_clean)
+    final_df_clean.to_csv(os.path.join(DATA_DIR, "fatalities_clean.csv"), index=False)
     load_fatalities_to_postgres()
+    print(f"Fatalities clean table created ({len(final_df_clean)} rows)")
 
 
 # ==========================================================================================================
