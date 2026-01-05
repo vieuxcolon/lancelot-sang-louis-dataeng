@@ -39,7 +39,7 @@ with DAG(
         python_callable=create_fatalities_prep
     )
 
-    t_trigger_analyze = TriggerDagRunOperator(
+    t_trigger_star_schema = TriggerDagRunOperator(
         task_id="t_trigger_star_schema",
         trigger_dag_id="dag_data_create_star_schema",
         wait_for_completion=True,
