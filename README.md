@@ -27,6 +27,7 @@ Students:
 -   [How to run](#how-to-run)
     -   [Automatic](#automatic)
     -   [Manual](#manual)
+    -   [EC2 setup (optional)](#ec2-setup-optional)
 -   [Validation and monitoring](#validation-and-monitoring)
 -   [Future developments](#future-developments)
 -   [Project submission checklist](#project-submission-checklist)
@@ -277,10 +278,16 @@ Notes:
 -   The ETL is idempotent and deterministic. Each run drops and recreates the same set of tables from fixed sources.
 -   Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
+### EC2 setup (optional)
+
+1. Review `setup_ec2_etl.sh` and set `REPO_URL` to your repository.
+2. Run `bash setup_ec2_etl.sh` on a fresh Ubuntu EC2 instance.
+3. Ensure a `.env` file exists in the cloned repo before launching the stack.
+
 ## Validation and monitoring
 
 -   `dag_data_bcreate_star_schema` runs `min_test_star_schema` and `full_test_star_schema` before analytics.
--   `dag_data_analytics_validation` fails fast if required dimensions are empty and stores SQL + results for auditing.
+-   `dag_data_analytics_validation` fails fast if `dim_date` is empty and stores SQL + results for auditing.
 -   Airflow logs are mounted under `./logs`; raw and analytics outputs are in `./data`.
 
 ## Future developments
