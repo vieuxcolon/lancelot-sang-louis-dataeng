@@ -1,4 +1,4 @@
-# DataEng 2024 - Occupational Accidents Analytics Platform
+# Report: Occupational Accidents Analytics Platform
 
 ![Insalogo](./images/logo-insa_0.png)
 
@@ -10,68 +10,90 @@ Students:
 -   Lancelot Tariot Camille (lancelot.tariot-camille@insa-lyon.fr)
 -   Nguyen Sang (sang.nguyen@insa-lyon.fr)
 
-## Abstract
+## Table of contents
 
-This repository implements an end-to-end, fully containerized ELT platform for analysing occupational accidents reported in Europe and the United States between 2009 and 2025. Apache Airflow orchestrates every step, from downloading the public datasets to running reproducible analytics on a dimensional model hosted in PostgreSQL.
+-   [Introduction](#introduction)
+-   [Data sources](#data-sources)
+-   [Pipeline](#pipeline)
+    -   [Ingestion](#ingestion)
+    -   [Staging](#staging)
+        -   [Cleansing](#cleansing)
+        -   [Transformations](#transformations)
+        -   [Enrichments](#enrichments)
+    -   [Production](#production)
+        -   [Star schema](#star-schema)
+        -   [Queries](#queries)
+-   [Environment](#environment)
+-   [How to run](#how-to-run)
+    -   [Automatic](#automatic)
+    -   [Manual](#manual)
+-   [Validation and monitoring](#validation-and-monitoring)
+-   [Future developments](#future-developments)
+-   [Project submission checklist](#project-submission-checklist)
+-   [License](#license)
 
-Key capabilities include:
+## Introduction
 
--   Automated ingestion of the ARIADB catalog (France), OSHA work accident case files (USA), and OSHA fatality summaries (USA) with resilient retry and fallback strategies.
--   Deterministic cleaning, deduplication, and enrichment logic that standardizes dates, locations, industries, hazards, and employers before persisting data in dedicated raw/clean/prep schemas.
--   Creation of a narrow star schema (six dimensions plus one fact table) that unlocks multi-dimensional analytics on top of occupational safety KPIs.
--   Built-in data quality gates (unit tests and analytics validation) plus GitHub Actions automation that converts the README into a submission-ready PDF after every `master` push.
+This project implements an end-to-end, containerized data pipeline that ingests public occupational accident datasets (ARIA and OSHA), cleans and standardizes them, and builds a PostgreSQL star schema for reproducible analytics. The report you are reading is the full project report, including the pipeline design, run instructions, and analysis queries.
 
-## Architecture Overview
+## Data sources
 
-### Components
+-   **ARIADB (France)**: [Accidents industriels et technologiques (ARIA)](https://www.data.gouv.fr/api/1/datasets/r/e4a3ad9a-cc9d-40c6-8d1a-aebdf75ded7b)
+-   **OSHA Work Accident Case Files (USA)**: [January 2015 to March 2025 accident case files](https://www.osha.gov/sites/default/files/January2015toMarch2025.zip)
+-   **OSHA Fatality Summaries (USA)**: nine CSVs published by OSHA for fiscal years 2009-2017 (`CSV_URLS_FATALITIES` in `dags/etl_utils.py`)
 
--   **Apache Airflow 3.1** (Celery Executor + Redis) orchestrates the ETL. All DAGs live in `dags/`, and `etl_utils.py` hosts the shared logic.
--   **PostgreSQL 16** stores raw data, clean/prep tables, and the star schema inside the `data_db` database. Initialization scripts are located under `postgres/init/`.
--   **MongoDB 7** (plus Mongo Express) temporarily stages the ARIADB feed to guarantee schema-safe ingestion before exporting to CSV/Postgres.
--   **Apache Druid 28** is provisioned for optional near-real-time analytics. Credentials and metadata settings live in `.env` and `postgres/init/02_init_druid.sql`.
--   **Redis 7.2**, **pgAdmin**, bind-mounted `./logs` and `./data` folders, and health checks defined in `docker-compose.yml` round out the stack.
--   **GitHub Actions** workflows in `.github/workflows/` provide a simple CI placeholder (`blank.yml`) and the markdown-to-PDF pipeline used during submission (`2pdf.yml`).
+## Pipeline
 
-### DAG lineage
+![Pipeline overview](./images/pipeline-overview.png)
 
-1. `dag_data_download`: downloads ARIADB (via Mongo), nine OSHA fatality CSVs, and the OSHA work-accident ZIP into `/opt/airflow/data`.
-2. `dag_data_clean`: normalizes, deduplicates, and loads the raw files into `ariadb_clean`, `workaccidents_clean`, and `fatalities_clean` tables.
-3. `dag_data_bprep`: reshapes the clean tables into schema-ready prep tables (`*_prep`), harmonizing keys, enforcing PK/FK integrity, and casting numeric fields.
-4. `dag_data_analyze`: builds and populates all dimension and fact tables, then runs `min_test_star_schema` and `full_test_star_schema` before triggering downstream analytics.
-5. `dag_data_analytics_validation`: executes the automated validation queries, persisting every result set (SQL + output) under `/opt/airflow/data/analytics_results`.
+The Airflow orchestration chain is:
 
-## Dataset Description
+1. `dag_data_download` (download raw datasets to `/opt/airflow/data`)
+2. `dag_data_clean` (cleaning + standardized tables)
+3. `dag_data_bprep` (prep tables ready for star schema)
+4. `dag_data_analyze` (dimensions, fact table, tests)
+5. `dag_data_analytics_validation` (automated validation queries)
 
-### 1. ARIADB (France)
+### Ingestion
 
--   **Source**: [Accidents industriels et technologiques (ARIA)](https://www.data.gouv.fr/api/1/datasets/r/e4a3ad9a-cc9d-40c6-8d1a-aebdf75ded7b).
--   **What it contains**: detailed reports about industrial accidents worldwide, including identifiers, dates, publication types, NAF/industry codes, departments, and narrative event classifications.
--   **Processing highlights**: data is ingested through MongoDB to guarantee resilient CSV parsing, column names are sanitized (lowercase snake_case without accents), dates are converted to ISO strings, and duplicates are removed by `aria_id`. Country names are standardized through `normalize_country`, and final columns feed `ariadb_clean` and `ariadb_prep`.
+-   ARIADB is downloaded via a MongoDB staging step to enforce schema-safe ingestion before exporting to CSV and loading to Postgres.
+-   OSHA work accidents are downloaded as a ZIP file and extracted to a single CSV.
+-   OSHA fatalities are downloaded as nine CSV files with retries and local fallback.
 
-### 2. OSHA Work Accident Case Files (USA)
+### Staging
 
--   **Source**: [January 2015 to March 2025 accident case files](https://www.osha.gov/sites/default/files/January2015toMarch2025.zip).
--   **What it contains**: US OSHA investigation case records with employer names, NAICS codes, event narratives, geospatial coordinates, hospitalization flags, and enforcement metadata.
--   **Processing highlights**: the ZIP is downloaded once and unpacked to `workaccidents.csv`. After loading to Postgres (`workaccidents`), wide text columns (`final_narrative`) are dropped, dates are normalized to `accident_date`, the dataset is flagged as USA-only, and records are deduplicated on `upa`. The curated subset powers `workaccidents_clean` and `workaccidents_prep`.
+#### Cleansing
 
-### 3. OSHA Fatality Summaries (USA)
+-   Column names are normalized (lowercase snake_case, accents removed).
+-   Dates are standardized to ISO format.
+-   Duplicates are removed on primary identifiers (e.g., `aria_id`, `upa`).
+-   Countries are normalized (e.g., USA/US/United States -> `USA`).
 
--   **Source**: Nine CSVs published by OSHA for fiscal years 2009-2017 (see `CSV_URLS_FATALITIES` in `etl_utils.py`).
--   **What it contains**: short descriptions of fatal incidents, including employer references, victims, hazards, and investigation dates.
--   **Processing highlights**: each file has a dedicated cleaner (column renaming, redundant-row removal, and per-row `no_of_fatalities=1`). All cleaners write intermediate `_clean` files that are concatenated into `fatalities_clean.csv` and stored in Postgres (`fatalities_clean`, `fatalities_prep`) with ISO dates and consistent country tags.
+#### Transformations
 
-## Star Schema Output
+-   Raw tables are filtered to the required columns for analytics.
+-   Clean tables are reshaped into `*_prep` tables to align with star schema keys.
+-   Types are enforced for numeric identifiers and metrics.
 
-The prep tables converge into a compact star schema built inside `data_db`:
+#### Enrichments
 
--   `dim_date` (unique calendar dates) and `dim_country` (country names plus ISO-like codes) provide the temporal and geographic axes.
--   `dim_industry`, `dim_accident_type`, `dim_hazard`, and `dim_employer` expose categorical drill-downs populated from all prep sources with conflict-free inserts.
--   `dim_fatality` stores the fatality magnitude dictionary (currently a single "ACCIDENT" entry, but designed for extensibility).
--   `fact_accidents` captures one row per standardized accident, referencing all dimension keys plus `no_of_fatality`.
+-   Country codes are derived for `dim_country`.
+-   Employer names and hazard classes are standardized before dimension loading.
 
-## Analytics Queries
+### Production
 
-`dag_data_analytics_validation` runs the automated checks defined in `dags/etl_utils.py`. The following 10 queries are the curated analysis set for manual execution in `data_db` once all DAGs finish:
+The production phase builds a star schema in `data_db` and runs validation queries.
+
+#### Star schema
+
+![Star schema](./images/star-schema.png)
+
+-   Dimensions: `dim_date`, `dim_country`, `dim_industry`, `dim_accident_type`, `dim_hazard`, `dim_employer`, `dim_fatality`
+-   Fact table: `fact_accidents` (one record per standardized accident)
+
+#### Queries
+
+The following 10 queries are the curated analysis set for manual execution in `data_db` once all DAGs finish.
 
 1. Fatalities by country, year, and industry
 
@@ -224,101 +246,85 @@ LEFT JOIN dim_hazard h ON fa.hazard_id = h.hazard_id
 LEFT JOIN dim_fatality f ON fa.fatality_id = f.fatality_id;
 ```
 
-## Repository Layout
+## Environment
 
--   `dags/`: Airflow DAG definitions (`dag_data_*.py`) and the shared ETL utilities in `etl_utils.py`.
--   `.github/workflows/`: CI placeholders plus the markdown-to-PDF workflow used for submissions.
--   `postgres/init/`: SQL scripts that provision `data_db`/`data_user` (plus a Druid metadata database) on container start.
--   `docker-compose.yml`: multi-service stack (Airflow, Postgres, Redis, Mongo, Druid, pgAdmin, Mongo Express) with bind mounts for `./logs` and `./data`.
--   `requirements.txt` and `Dockerfile`: pin the Python environment installed inside Airflow images.
--   `images/` and `pdfs/`: assets reused by the README and by the GitHub Action output artifacts.
+### Stack
 
-## Requirements
+-   Apache Airflow 3.1 (Celery Executor + Redis)
+-   PostgreSQL 16 (`data_db` for project tables)
+-   MongoDB 7 (ARIADB staging)
+-   Druid 28 (optional metadata + runtime)
 
--   Docker Desktop 4.x (or a compatible Linux Docker Engine) with the Compose v2 plugin (>= 2.20).
--   At least 4 CPU cores, 16 GB RAM, and 20 GB of free disk space (Postgres + Druid use persistent volumes).
--   Internet egress to download public datasets the first time each DAG runs.
--   Optional: an AWS EC2 instance (x86_64) with the same specs for remote deployment.
--   Git for cloning the repository and a shell capable of running the commands below.
+### Services
 
-Python dependencies are installed from `requirements.txt`. It now includes only the runtime dependencies required by the ETL (Airflow, pandas, pymongo, psycopg2-binary).
+| Service           | URL                   | Default credentials        | Notes                                                                     |
+| ----------------- | --------------------- | -------------------------- | ------------------------------------------------------------------------- |
+| Airflow UI / API  | http://localhost:8080 | `airflow` / `airflow`      | Unpause and trigger DAGs, inspect task logs, clear runs.                  |
+| pgAdmin           | http://localhost:5050 | `admin@admin.com` / `root` | Use for database browsing. Default connection is available under Servers. |
+| Mongo Express     | http://localhost:8085 | `admin` / `admin`          | Inspect the temporary ARIADB collection after download.                   |
+| Druid Coordinator | http://localhost:8081 | `druid` / `druid`          | Optional; validates that metadata storage is reachable.                   |
+| Redis             | n/a                   | n/a                        | Used internally by Airflow Celery, no UI exposed.                         |
 
-## Setup & Usage
+PgAdmin connection details (if you create a new server):
 
-### 1. Clone and configure the environment
+-   Hostname: `postgres`
+-   Maintenance database: `postgres`
+-   Username: `data_user`
+-   Password: `root`
 
-```powershell
-git clone https://github.com/<your-org>/lancelot-sang-louis-dataeng.git
-cd lancelot-sang-louis-dataeng
-```
+Databases in Postgres:
 
-Review `.env`, update passwords/ports if needed, and keep sensitive overrides out of version control whenever you deploy to shared infrastructure.
+-   `airflow` for Airflow metadata only
+-   `druid` for Druid metadata only
+-   `postgres` as the maintenance database
+-   `data_db` for all project tables
 
-### 2. Start the stack
+Python dependencies are installed from `requirements.txt`. It includes only the runtime dependencies required by the ETL (Airflow, pandas, pymongo, psycopg2-binary).
+
+## How to run
+
+### Automatic
 
 ```powershell
 docker compose up --build -d
 docker compose ps
 ```
 
-The first run builds the Airflow image (installing `requirements.txt`) and initializes the databases defined under `postgres/init/`.
+### Manual
 
-### 3. Access the services
-
-| Service           | URL                   | Default credentials        | Notes                                                                       |
-| ----------------- | --------------------- | -------------------------- | --------------------------------------------------------------------------- |
-| Airflow UI / API  | http://localhost:8080 | `airflow` / `airflow`      | Unpause and trigger DAGs, inspect task logs, clear runs.                    |
-| pgAdmin           | http://localhost:5050 | `admin@admin.com` / `root` | Use for database browsing. Default connection is available under Servers.   |
-| Mongo Express     | http://localhost:8085 | `admin` / `admin`          | Inspect the temporary ARIADB collection after download.                     |
-| Druid Coordinator | http://localhost:8081 | `druid` / `druid`          | Optional; validates that metadata storage is reachable.                     |
-| Redis             | n/a                   | n/a                        | Used internally by Airflow Celery, no UI exposed.                           |
-
-PgAdmin connection details (if you create a new server):
-- Hostname: `postgres`
-- Maintenance database: `postgres`
-- Username: `data_user`
-- Password: `root`
-
-Databases in Postgres:
-- `airflow` for Airflow metadata only
-- `druid` for Druid metadata only
-- `postgres` as the maintenance database
-- `data_db` for all project tables
-
-### 4. Run the pipeline in Airflow
-
-1. Unpause `dag_data_download` and trigger it once. The downstream DAGs (`dag_data_clean`, `dag_data_bprep`, `dag_data_analyze`, `dag_data_analytics_validation`) are chained through `TriggerDagRunOperator` and will run in order.
-2. Alternatively, trigger from the CLI: `docker compose exec airflow-worker airflow dags trigger dag_data_download`.
-3. Each DAG writes raw files to `./data` (host) / `/opt/airflow/data` (containers) and persists curated tables into Postgres `data_db`.
-4. Inspect the analytics outputs or rerun any DAG on demand to refresh the data lake.
+1. Review `.env`, update ports or credentials if needed.
+2. Start the stack: `docker compose up --build -d`.
+3. Open Airflow at http://localhost:8080 and trigger `dag_data_download`.
+4. The DAGs will chain automatically until analytics validation completes.
+5. Query results are in Postgres `data_db` and validation outputs are in `./data/analytics_results`.
 
 Notes:
-- The ETL is idempotent and deterministic. Each run drops and recreates the same set of tables from fixed sources.
-- Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
-### 5. Retrieve outputs
+-   The ETL is idempotent and deterministic. Each run drops and recreates the same set of tables from fixed sources.
+-   Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
--   Query the dimensional model with any SQL client that connects to Postgres on `localhost:5432` using `data_user` / `root`.
--   Analytics validation artifacts are text files located at `./data/analytics_results/*.txt`. Example:
+## Validation and monitoring
 
-```powershell
-docker compose exec airflow-worker ls -lh /opt/airflow/data/analytics_results
-```
+-   `dag_data_analyze` runs `min_test_star_schema` and `full_test_star_schema` before analytics.
+-   `dag_data_analytics_validation` fails fast if required dimensions are empty and stores SQL + results for auditing.
+-   Airflow logs are mounted under `./logs`; raw and analytics outputs are in `./data`.
 
-### 6. Stop and clean up
+## Future developments
 
-```powershell
-docker compose down
-# Remove persistent volumes if you need a clean slate
-docker compose down -v
-```
+-   Provide offline sample datasets to allow full testing without network access.
+-   Add Druid ingestion specs to build real-time dashboards from `fact_accidents`.
+-   Extend the star schema with additional dimensions (e.g., region or employer sector).
 
-## Validation, Testing, and Monitoring
+## Project submission checklist
 
--   `dag_data_analyze` automatically runs `min_test_star_schema` (FK sanity check) and `full_test_star_schema` (joined preview) before any analytics job runs.
--   `dag_data_analytics_validation` fails fast if required dimensions are empty and stores both SQL text and results for auditing.
--   Airflow logs are mounted under `./logs`, while raw/clean data and analytics outputs live under `./data` for easy inspection.
--   Docker health checks (Redis, Postgres, Airflow API) raise failures early; use `docker compose logs -f <service>` for troubleshooting.
+-   [x] Repository with the code, well documented
+-   [x] Docker-compose file to run the environment
+-   [x] Detailed description of the various steps
+-   [x] Report in the README with project design steps divided per area
+-   [ ] Example dataset for offline testing (sample data not yet included)
+-   [ ] Slides for the project poster (add `poster.md` or `slides.md`)
+-   [x] Airflow + pandas + MongoDB + Postgres used in the pipeline
+-   [x] Star schema built in Postgres
 
 ## License
 
