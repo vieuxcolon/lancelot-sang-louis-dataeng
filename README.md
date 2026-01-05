@@ -44,7 +44,7 @@ This project implements an end-to-end, containerized data pipeline that ingests 
 
 ## Pipeline
 
-![Pipeline overview](./images/pipeline-overview.png)
+![Pipeline overview](./images/pipeline-overview.jpeg)
 
 The Airflow orchestration chain is:
 
