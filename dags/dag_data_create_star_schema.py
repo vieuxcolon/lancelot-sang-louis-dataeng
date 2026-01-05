@@ -25,7 +25,7 @@ from etl_utils import (
 # DAG Definition
 # ======================
 with DAG(
-    dag_id="dag_data_create_star_schema",
+    dag_id="dag_data_bcreate_star_schema",
     start_date=datetime(2025, 1, 1),
     schedule=None,
     catchup=False,
