@@ -232,5 +232,3 @@ volumes:
     name: mongo-data
   mongo-config:
     name: mongo-config
-  druid-data:
-    name: druid-data

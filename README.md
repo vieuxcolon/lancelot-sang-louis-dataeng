@@ -253,7 +253,6 @@ LEFT JOIN dim_fatality f ON fa.fatality_id = f.fatality_id;
 -   Apache Airflow 3.1 (Celery Executor + Redis)
 -   PostgreSQL 16 (`data_db` for project tables)
 -   MongoDB 7 (ARIADB staging)
--   Druid 28 (optional metadata + runtime)
 
 ### Services
 
@@ -262,7 +261,6 @@ LEFT JOIN dim_fatality f ON fa.fatality_id = f.fatality_id;
 | Airflow UI / API  | http://localhost:8080 | `airflow` / `airflow`      | Unpause and trigger DAGs, inspect task logs, clear runs.                  |
 | pgAdmin           | http://localhost:5050 | `admin@admin.com` / `root` | Use for database browsing. Default connection is available under Servers. |
 | Mongo Express     | http://localhost:8085 | `admin` / `admin`          | Inspect the temporary ARIADB collection after download.                   |
-| Druid Coordinator | http://localhost:8081 | `druid` / `druid`          | Optional; validates that metadata storage is reachable.                   |
 | Redis             | n/a                   | n/a                        | Used internally by Airflow Celery, no UI exposed.                         |
 
 PgAdmin connection details (if you create a new server):
@@ -275,7 +273,6 @@ PgAdmin connection details (if you create a new server):
 Databases in Postgres:
 
 -   `airflow` for Airflow metadata only
--   `druid` for Druid metadata only
 -   `postgres` as the maintenance database
 -   `data_db` for all project tables
 
@@ -312,7 +309,6 @@ Notes:
 ## Future developments
 
 -   Provide offline sample datasets to allow full testing without network access.
--   Add Druid ingestion specs to build real-time dashboards from `fact_accidents`.
 -   Extend the star schema with additional dimensions (e.g., region or employer sector).
 
 ## Project submission checklist
