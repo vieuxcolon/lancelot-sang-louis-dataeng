@@ -41,7 +41,7 @@ with DAG(
 
     t_trigger_star_schema = TriggerDagRunOperator(
         task_id="t_trigger_star_schema",
-        trigger_dag_id="dag_data_create_star_schema",
+        trigger_dag_id="dag_data_bcreate_star_schema",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
