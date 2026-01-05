@@ -52,6 +52,7 @@ DB_CONFIG = {
     "user": "data_user",
     "password": "root",
 
+    # postgres tables
     "ariadb_table": "ariadb",
     "ariadb_clean_table": "ariadb_clean",
     "ariadb_prep_table": "ariadb_prep",
