@@ -40,12 +40,12 @@ with DAG(
     )
 
     t_trigger_analyze = TriggerDagRunOperator(
-        task_id="t_trigger_data_analyze",
-        trigger_dag_id="dag_data_analyze",
+        task_id="t_trigger_star_schema",
+        trigger_dag_id="dag_data_create_star_schema",
         wait_for_completion=True,
         allowed_states=["success"],
         failed_states=["failed"]
     )
 
-    [t_create_ariadb_prep, t_create_workaccidents_prep, t_create_fatalities_prep] >> t_trigger_analyze
+    [t_create_ariadb_prep, t_create_workaccidents_prep, t_create_fatalities_prep] >> t_trigger_star_schema
 
