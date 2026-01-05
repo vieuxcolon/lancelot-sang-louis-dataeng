@@ -1891,7 +1891,7 @@ def full_test_star_schema(*args, **kwargs):
 
         df_test = pd.read_sql(query, conn)
 
-        print("✔ full_test_star_schema query returned:")
+        print(" full_test_star_schema query returned:")
         print(df_test.head(20))
         print(f"Total rows returned: {len(df_test)}")
 
@@ -2103,5 +2103,5 @@ def run_analytics_validation():
         print(" All analytics validation queries executed successfully.")
 
     finally:
-        # 7️⃣ Close connection safely
+        # 7. Close connection safely
         conn.close()
