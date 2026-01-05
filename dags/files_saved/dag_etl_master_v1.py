@@ -1,0 +1,24 @@
+# =================== dag_etl_master_v1.py ======================================================================================
+# This is the main ETL DAG that orchestrates the entire ETL process
+# It uses dag_data_fetch.py, dag_data_clean.py and dag_data_analyze.py to orchestrate the entire ETL pipeline from end to end.
+# It also uses utilities from the etl_utils.py to do its job
+# ================================================================================================================================
+# ETL Master: dag_etl_master_v1.py
+
+from airflow import DAG
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from datetime import datetime
+
+with DAG(
+    dag_id="dag_etl_master_v1",
+    start_date=datetime(2025, 1, 1),
+    schedule=None,
+    catchup=False,
+    max_active_runs=1,
+) as dag:
+
+    trigger_fetch = TriggerDagRunOperator(task_id="trigger_data_fetch", trigger_dag_id="dag_data_fetch", wait_for_completion=True)
+    trigger_clean = TriggerDagRunOperator(task_id="trigger_data_clean", trigger_dag_id="dag_data_clean", wait_for_completion=True)
+    trigger_analyze = TriggerDagRunOperator(task_id="trigger_data_analyze", trigger_dag_id="dag_data_analyze", wait_for_completion=True)
+
+    trigger_fetch >> trigger_clean >> trigger_analyze
