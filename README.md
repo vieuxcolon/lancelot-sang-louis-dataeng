@@ -170,6 +170,16 @@ ORDER BY total_fatalities DESC
 -   PostgreSQL 16 (`data_db` for project tables)
 -   MongoDB 7 (ARIADB staging)
 
+Tool versions (from `Dockerfile`, `docker-compose.yml`, and `requirements.txt`):
+
+-   Airflow image: `apache/airflow:3.1.0`
+-   PostgreSQL: `postgres:16`
+-   Redis: `redis:7.2-bookworm`
+-   MongoDB: `mongo:7`
+-   Mongo Express: `mongo-express:latest` (tag not pinned)
+-   pgAdmin: `elestio/pgadmin` (tag not pinned)
+-   Python packages: `apache-airflow==3.1.0`, `pandas==2.2.2`, `pymongo==4.10.1`, `psycopg2-binary==2.9.9`
+
 ### Services
 
 | Service          | URL                   | Default credentials        | Notes                                                                     |
@@ -280,7 +290,7 @@ Note: Even though a smaller EC2 instance could work successfully with our projec
 -   [x] Docker-compose file to run the environment
 -   [x] Detailed description of the various steps
 -   [x] Report in the README with project design steps divided per area
--   [x] Example dataset for offline testing (sample data not yet included)
+-   [x] Example dataset for offline testing
 -   [x] Slides for the project poster (add `poster.md` or `slides.md`)
 -   [x] Airflow + pandas + MongoDB + Postgres used in the pipeline
 -   [x] Star schema built in Postgres
