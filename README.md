@@ -213,7 +213,7 @@ Follow the steps below to run the pipeline end-to-end.
 
 Notes:
 
--   The ETL is idempotent and deterministic. Each run drops and recreates the same set of tables from fixed sources.
+-   The ETL rebuilds tables each run. Results are deterministic for a fixed snapshot of source data, but live sources and time-relative queries can change outputs over time.
 -   Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
 ### AWS (remote)
