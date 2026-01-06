@@ -94,21 +94,21 @@ The production phase builds a star schema in `data_db` and runs validation queri
 
 #### Queries
 
-The following 9 queries are executed by `dag_data_analytics_validation` and saved to `./data/analytics_results` once the star schema build completes.
+The following 5 queries are executed by `dag_data_analytics_validation` and saved to `./data/analytics_results` once the star schema build completes.
 
-1. Fatalities by year
+1. Fatalities by year (descending by year)
 
 ```sql
 SELECT
-    d.date AS year,
+    EXTRACT(YEAR FROM d.date) AS year,
     SUM(f.no_of_fatality) AS total_fatalities
 FROM fact_accidents f
 JOIN dim_date d ON f.date_id = d.date_id
-GROUP BY d.date
-ORDER BY d.date
+GROUP BY EXTRACT(YEAR FROM d.date)
+ORDER BY year DESC
 ```
 
-2. Fatalities by country
+2. Fatalities by country (all time)
 
 ```sql
 SELECT
@@ -120,84 +120,39 @@ GROUP BY c.country_name
 ORDER BY total_fatalities DESC
 ```
 
-3. Fatalities by industry
+3. France vs USA (last 10 years)
 
 ```sql
 SELECT
-    i.industry_code AS industry,
-    SUM(f.no_of_fatality) AS total_fatalities
-FROM fact_accidents f
-JOIN dim_industry i ON f.industry_id = i.industry_id
-GROUP BY i.industry_code
-ORDER BY total_fatalities DESC
-```
-
-4. France vs USA fatalities (last 10 years)
-
-```sql
-SELECT
-    d.date AS year,
-    SUM(CASE WHEN c.country_name = 'FRANCE'
-             THEN f.no_of_fatality ELSE 0 END) AS france,
-    SUM(CASE WHEN c.country_name = 'USA'
-             THEN f.no_of_fatality ELSE 0 END) AS usa
+    EXTRACT(YEAR FROM d.date) AS year,
+    SUM(CASE WHEN c.country_name = 'FRANCE' THEN f.no_of_fatality ELSE 0 END) AS france,
+    SUM(CASE WHEN c.country_name = 'USA' THEN f.no_of_fatality ELSE 0 END) AS usa
 FROM fact_accidents f
 JOIN dim_country c ON f.country_id = c.country_id
 JOIN dim_date d ON f.date_id = d.date_id
 WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
-GROUP BY d.date
-ORDER BY d.date
+GROUP BY EXTRACT(YEAR FROM d.date)
+ORDER BY year DESC
 ```
 
-5. Top 10 countries by fatalities
+4. Top 10 countries by fatalities (all time)
 
 ```sql
 SELECT
-    c.country_name,
+    c.country_name AS country,
     SUM(f.no_of_fatality) AS total_fatalities
 FROM fact_accidents f
 JOIN dim_country c ON f.country_id = c.country_id
-JOIN dim_date d ON f.date_id = d.date_id
 GROUP BY c.country_name
 ORDER BY total_fatalities DESC
 LIMIT 10
 ```
 
-6. Top 10 industries by fatalities
+5. Recent 10-year fatalities by country
 
 ```sql
 SELECT
-    i.industry_code,
-    SUM(f.no_of_fatality) AS total_fatalities
-FROM fact_accidents f
-JOIN dim_industry i ON f.industry_id = i.industry_id
-JOIN dim_country c ON f.country_id = c.country_id
-JOIN dim_date d ON f.date_id = d.date_id
-GROUP BY i.industry_code
-ORDER BY total_fatalities DESC
-LIMIT 10
-```
-
-7. Top 10 employers by fatalities
-
-```sql
-SELECT
-    e.employer,
-    SUM(f.no_of_fatality) AS total_fatalities
-FROM fact_accidents f
-JOIN dim_employer e ON f.employer_id = e.employer_id
-JOIN dim_country c ON f.country_id = c.country_id
-JOIN dim_date d ON f.date_id = d.date_id
-GROUP BY e.employer
-ORDER BY total_fatalities DESC
-LIMIT 10
-```
-
-8. Top 10 countries by fatalities (last 10 years)
-
-```sql
-SELECT
-    c.country_name,
+    c.country_name AS country,
     SUM(f.no_of_fatality) AS total_fatalities
 FROM fact_accidents f
 JOIN dim_country c ON f.country_id = c.country_id
@@ -205,23 +160,6 @@ JOIN dim_date d ON f.date_id = d.date_id
 WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
 GROUP BY c.country_name
 ORDER BY total_fatalities DESC
-LIMIT 10
-```
-
-9. Fatalities trend by industry (last 10 years)
-
-```sql
-SELECT
-    d.date AS year,
-    i.industry_code,
-    SUM(f.no_of_fatality) AS total_fatalities
-FROM fact_accidents f
-JOIN dim_industry i ON f.industry_id = i.industry_id
-JOIN dim_date d ON f.date_id = d.date_id
-JOIN dim_country c ON f.country_id = c.country_id
-WHERE d.date >= (CURRENT_DATE - INTERVAL '10 years')
-GROUP BY d.date, i.industry_code
-ORDER BY d.date, total_fatalities DESC
 ```
 
 ## Environment
