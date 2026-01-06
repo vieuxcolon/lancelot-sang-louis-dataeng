@@ -17,11 +17,11 @@ sudo systemctl enable docker
 sudo systemctl start docker
 
 # 4. Add 'ubuntu' user to docker group
-echo "👤 Adding 'ubuntu' user to docker group..."
+echo "Adding 'ubuntu' user to docker group..."
 sudo usermod -aG docker $USER
 echo " Docker group updated. Docker commands will require 'sudo' for this session."
 
-# 5️⃣ Clone Git repository
+# 5. Clone Git repository
 REPO_URL="https://github.com/vieuxcolon/lancelot-sang-louis-dataeng.git"    # <-- Replace with your Git repo URL
 REPO_DIR="${HOME}/$(basename $REPO_URL .git)"
 if [ -d "$REPO_DIR" ]; then
