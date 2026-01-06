@@ -15,22 +15,26 @@ from etl_utils import (
     download_and_extract_zip,
     CSV_URL,
     ZIP_URL,
-    DATA_DIR
+    DATA_DIR,
 )
+
 
 def task_download_ariadb():
     print(f"[INFO] Downloading ARIADB to {os.path.join(DATA_DIR, 'ariadb.csv')} via MongoDB")
     download_ariadb_via_mongo(CSV_URL, batch_size=5000)
     print(f"✔ ARIADB CSV ready at {os.path.join(DATA_DIR, 'ariadb.csv')}")
 
+
 def task_download_fatalities():
     files = download_all_fatalities()
     for f in files:
         print(f"✔ Fatalities file downloaded: {f}")
 
+
 def task_download_workaccidents():
     csv_path = download_and_extract_zip(ZIP_URL)
     print(f"✔ Workaccidents CSV downloaded/extracted to {csv_path}")
+
 
 with DAG(
     dag_id="dag_data_download",
@@ -42,12 +46,15 @@ with DAG(
 
     t_download_ariadb = PythonOperator(task_id="t_download_ariadb", python_callable=task_download_ariadb)
     t_download_fatalities = PythonOperator(task_id="t_download_fatalities", python_callable=task_download_fatalities)
-    t_download_workaccidents = PythonOperator(task_id="t_download_workaccidents", python_callable=task_download_workaccidents)
+    t_download_workaccidents = PythonOperator(
+        task_id="t_download_workaccidents", python_callable=task_download_workaccidents
+    )
 
     t_trigger_clean = TriggerDagRunOperator(
         task_id="t_trigger_data_clean",
         trigger_dag_id="dag_data_clean",
-        wait_for_completion=True
+        wait_for_completion=True,
+        trigger_rule="all_done",
     )
 
     [t_download_ariadb, t_download_fatalities, t_download_workaccidents] >> t_trigger_clean
