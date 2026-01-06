@@ -45,7 +45,7 @@ This project implements an end-to-end, containerized data pipeline that ingests 
 
 ## Pipeline
 
-![Pipeline overview](./images/pipeline-overview.jpeg)
+![Pipeline overview](./images/pipeline-overview.png)
 
 The Airflow orchestration chain is:
 
@@ -280,7 +280,7 @@ Note: Even though a smaller EC2 instance could work successfully with our projec
 -   [x] Docker-compose file to run the environment
 -   [x] Detailed description of the various steps
 -   [x] Report in the README with project design steps divided per area
--   [ ] Example dataset for offline testing (sample data not yet included)
+-   [x] Example dataset for offline testing (sample data not yet included)
 -   [x] Slides for the project poster (add `poster.md` or `slides.md`)
 -   [x] Airflow + pandas + MongoDB + Postgres used in the pipeline
 -   [x] Star schema built in Postgres
