@@ -24,10 +24,9 @@ Students:
         -   [Star schema](#star-schema)
         -   [Queries](#queries)
 -   [Environment](#environment)
--   [How to run](#how-to-run)
-    -   [Automatic](#automatic)
-    -   [Manual](#manual)
-    -   [EC2 setup (optional)](#ec2-setup-optional)
+-   [How to run the project](#how-to-run-the-project)
+    -   [Local (Docker)](#local-docker)
+    -   [AWS (remote)](#aws-remote)
 -   [Validation and monitoring](#validation-and-monitoring)
 -   [Future developments](#future-developments)
 -   [Project submission checklist](#project-submission-checklist)
@@ -194,33 +193,32 @@ Databases in Postgres:
 
 Python dependencies are installed from `requirements.txt`. It includes only the runtime dependencies required by the ETL (Airflow, pandas, pymongo, psycopg2-binary).
 
-## How to run
+## How to run the project
 
-### Automatic
+Follow the steps below to run the pipeline end-to-end.
 
-```powershell
-docker compose up --build -d
-docker compose ps
-```
+### Local (Docker)
 
-### Manual
-
-1. Review `.env`, update ports or credentials if needed.
-2. Start the stack: `docker compose up --build -d`.
-3. Open Airflow at http://localhost:8080 and trigger `dag_data_download`.
-4. The DAGs will chain automatically until analytics validation completes.
-5. Query results are in Postgres `data_db` and validation outputs are in `./data/analytics_results`.
+1. Clone the [repository](https://github.com/vieuxcolon/lancelot-sang-louis-dataeng) and `cd` into the project root.
+2. Open `.env` and update any default credentials you want to change, for example Airflow (`_AIRFLOW_WWW_USER_USERNAME`, `_AIRFLOW_WWW_USER_PASSWORD`), pgAdmin (`PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD`), Mongo Express (`ME_CONFIG_BASICAUTH_USERNAME`, `ME_CONFIG_BASICAUTH_PASSWORD`), and the data DB user (`DATA_POSTGRES_USER`, `DATA_POSTGRES_PASSWORD`).
+3. From the project root, start the stack: `docker compose up -d` (add `--build` on the first run or after dependency changes).
+4. (Optional) Confirm containers are running: `docker compose ps`.
+5. Open Airflow at http://localhost:8080 and sign in with the Airflow credentials from `.env` (defaults `airflow` / `airflow`).
+6. In the left sidebar, click `DAGs`.
+7. Toggle each DAG to "on" (unpause).
+8. Click `dag_data_download`, then click "Trigger DAG" (play button). Do not manually trigger downstream DAGs; they will chain automatically.
+9. Wait for the run chain to finish successfully (last DAG: `dag_data_analytics_validation`).
+10. Open pgAdmin at http://localhost:5050 and sign in with `PGADMIN_DEFAULT_EMAIL` / `PGADMIN_DEFAULT_PASSWORD`.
+11. Run the analytical queries (see the Queries section above).
 
 Notes:
 
 -   The ETL is idempotent and deterministic. Each run drops and recreates the same set of tables from fixed sources.
 -   Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
-### EC2 setup (optional)
+### AWS (remote)
 
-1. Review `setup_ec2_etl.sh` and set `REPO_URL` to your repository.
-2. Run `bash setup_ec2_etl.sh` on a fresh Ubuntu EC2 instance.
-3. Ensure a `.env` file exists in the cloned repo before launching the stack.
+Add your AWS run steps here.
 
 ## Validation and monitoring
 
