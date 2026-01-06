@@ -259,7 +259,7 @@ e.g., given an EC2 instance with IP address 54.74.220.227, here is an example of
     ```bash
     ssh -i ~/.ssh/etl-keypair.pem ubuntu@54.74.220.227
     ```
-4. Launch the project setup with bash and wait until it the setup finishes finishes:
+4. Launch the project setup with bash and wait until the setup finishes:
     ```
     chmod +x setup_ec2_etl.sh; bash setup_ec2_etl.sh
     ```
