@@ -1,4 +1,4 @@
-# Report: Occupational Accidents Analytics Platform
+# Report: Workplace incidents analysis: Use case of EU and US
 
 ![Insalogo](./images/logo-insa_0.png)
 
