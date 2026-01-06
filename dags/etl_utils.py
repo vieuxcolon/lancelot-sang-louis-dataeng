@@ -1389,12 +1389,12 @@ def create_fatalities_prep():
     
     
 # ==========================================================================================================
-# DAG_DATA_ANALYZE FUNCTIONS:  1. drop_dimensions, 2. drop_fact, 3. create_dimensions, 4. populate_dimensions
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  1. drop_dimensions, 2. drop_fact, 3. create_dimensions, 4. populate_dimensions
 # 5. create_fact, 6.populate_fact, 7. min_test_star_schema, 8. full_test_star_schema
 # for star schema creation and testing
 # ==========================================================================================================
 # ==========================================================================================================
-# DAG_DATA_ANALYZE FUNCTIONS:  1. drop_dimensions
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  1. drop_dimensions
 # Drops all star schema dimension tables if they exist.
 # ==========================================================================================================
 
@@ -1413,7 +1413,7 @@ def drop_dimensions(*args, **kwargs):
     conn.close()
     
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  2. drop_fact
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  2. drop_fact
 # Drops the star schema fact table if it exists.
 # ==========================================================================================================
 
@@ -1428,7 +1428,7 @@ def drop_fact(*args, **kwargs):
     conn.close()
 
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  3. create_dimensions
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  3. create_dimensions
 # Creates all dimension tables (without data) for the star schema.
 # ==========================================================================================================
 
@@ -1519,7 +1519,7 @@ def create_dimensions(*args, **kwargs):
     print(" Dimension tables created successfully")
 
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  4. populate_dimensions
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  4. populate_dimensions
 # Populates all dimension tables from prep tables with proper primary keys.
 # ==========================================================================================================  
 
@@ -1653,7 +1653,7 @@ def populate_dimensions(*args, **kwargs):
 
 
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  5. create_fact
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  5. create_fact
 # Creates the fact_accidents table for the star schema (with no data).
 # =========================================================================================================
 
@@ -1690,7 +1690,7 @@ def create_fact(*args, **kwargs):
 
 
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  6. populate_fact
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  6. populate_fact
 # Populates the fact_accidents table from prep tables and dimension tables.
 # =========================================================================================================
 
@@ -1830,7 +1830,7 @@ def populate_fact(*args, **kwargs):
 
 
 # ==========================================================================================================
-# DAG_DATA_ANALYSE FUNCTIONS:  7. min_test_star_schema
+# DAG_DATA_CREATE_STAR_SCHEMA FUNCTIONS:  7. min_test_star_schema
 # Minimal test of star schema functions.
 #  ==========================================================================================================
 
