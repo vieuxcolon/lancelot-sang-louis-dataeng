@@ -283,6 +283,7 @@ Note: Even though a smaller EC2 instance could work successfully with our projec
 
 -   Provide offline sample datasets to allow full testing without network access.
 -   Extend the star schema with additional dimensions (e.g., region or employer sector).
+-   Integrate Druid into the project architecture
 
 ## Project submission checklist
 
