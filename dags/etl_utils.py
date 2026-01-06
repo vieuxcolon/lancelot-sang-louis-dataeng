@@ -413,6 +413,35 @@ def export_mongo_to_csv(filename: str):
     print(f"ARIADB CSV written to {output_path}")
 
 
+def _looks_like_ariadb(df: pd.DataFrame) -> bool:
+    try:
+        tmp = df.copy()
+        tmp = clean_column_names(tmp)
+        return "numero_aria" in tmp.columns
+    except Exception:
+        return False
+
+
+def read_ariadb_csv_local(local_path: str) -> pd.DataFrame:
+    if not os.path.exists(local_path):
+        raise FileNotFoundError(f"Local ARIADB file not found: {local_path}")
+
+    try:
+        df = pd.read_csv(local_path, sep=";", skiprows=7, encoding="latin1")
+        if _looks_like_ariadb(df):
+            print(f"[INFO] Using local ARIADB file with skiprows=7: {local_path}")
+            return df
+    except Exception as exc:
+        print(f"[WARNING] Local ARIADB read with skiprows=7 failed: {exc}")
+
+    df = pd.read_csv(local_path, sep=";", encoding="latin1")
+    if _looks_like_ariadb(df):
+        print(f"[INFO] Using local ARIADB file with skiprows=0: {local_path}")
+        return df
+
+    raise RuntimeError(f"Local ARIADB file format not recognized: {local_path}")
+
+
 def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
     """
     End-to-end flow:
@@ -427,6 +456,7 @@ def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
     # ------------------------------------------------------------------------
     # Step 1: Download CSV from source URL
     # ------------------------------------------------------------------------
+    local_path = os.path.join(DATA_DIR, "ariadb.csv")
     try:
         print("[DEBUG] Attempting UTF-8 CSV read")
         df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
@@ -437,13 +467,21 @@ def download_ariadb_via_mongo(url: str, batch_size: int = 5000):
             df = pd.read_csv(url, sep=";", skiprows=7, encoding="latin1")
             print(f"[DEBUG] CSV loaded with latin1 encoding: {len(df)} rows")
         except Exception:
-            print("[ERROR] CSV read failed (latin1)")
+            print("[WARNING] CSV read failed (latin1). Trying local fallback.")
+            try:
+                df = read_ariadb_csv_local(local_path)
+            except Exception:
+                print("[ERROR] Local fallback failed")
+                traceback.print_exc()
+                sys.exit(1)
+    except Exception:
+        print("[WARNING] CSV download failed. Trying local fallback.")
+        try:
+            df = read_ariadb_csv_local(local_path)
+        except Exception:
+            print("[ERROR] Local fallback failed")
             traceback.print_exc()
             sys.exit(1)
-    except Exception:
-        print("[ERROR] CSV download failed")
-        traceback.print_exc()
-        sys.exit(1)
 
     # ------------------------------------------------------------------------
     # Step 2: Add ETL metadata
