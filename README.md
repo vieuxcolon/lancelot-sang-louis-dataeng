@@ -217,8 +217,29 @@ Notes:
 -   Do not run analytical queries while DAGs are running. Run queries either before launching a new run or after all DAGs finish successfully.
 
 ### AWS (remote)
+On AWS the project can be accessed using the EC2 public IP and service ports. For example given an EC2 instance having a public IP=54.74.220.227. The connection URLs are as follows: 
+1. Access Airflow UI:      http://54.74.220.227:8080
+2. Access Mongo Express:   http://54.74.220.227:8085
+3. Access PGAdmin:         http://54.74.220.227:5050
 
-Add your AWS run steps here.
+From the Airflow GUI, activate all dags and launch the dag_data_download. This dag will trigger the entire dag chain. The entire dag chain is as follows:
+dag_data_download -> `dag_data_clean -> dag_data_bprep -> dag_data_bcreate_star_schema -> dag_data_analytics_validation 
+
+### AWS Setup
+To set up the project on AWS, launch an Ubuntu 22.04 LTS t3.large instance. Use your keypair to copy the bash script setup_ec2_etl.sh to the EC2 instance. Use bash to launch the project setup.
+e.g. given an EC2 instance with IP address 54.74.220.227 here is an example of project setup steps.
+1. Authorize traffic to the Security Group to which the EC2 instance belongs, here $SG_ID for ports 22, 8080, 5050, and 8081. This allows traffic from all hosts to the specified ports.
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 8080 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 5050 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 8081 --cidr 0.0.0.0/0
+2. Copy the setup_ec2_etl.sh file to the EC2 instance: scp -i ~/.ssh/etl-keypair.pem setup_ec2_etl.sh ubuntu@54.74.220.227:~ 
+3. Login to AWS EC2 instance using a VSCODE terminal or another Terminal with your EC2 keypair: ssh -i ~/.ssh/etl-keypair.pem ubuntu@54.74.220.227
+4. chmod +x setup_ec2_etl.sh; bash setup_ec2_etl.sh. When the setup finishes
+5. Connect to the project via a browser using the correct URL: e.g. http://54.74.220.227:8080 (Apache Airflow) http://54.74.220.227:8085 (Mongo Express) http://54.74.220.227:5050 (pgadmin)
+
+Note: Even though a smaller EC2 instance could work successuflly with our project, we tested it solely on an Ubuntu 22.04 LTS t3.large instance.
+
 
 ## Validation and monitoring
 
