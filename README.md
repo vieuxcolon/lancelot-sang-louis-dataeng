@@ -259,7 +259,7 @@ Note: Even though a smaller EC2 instance could work successuflly with our projec
 -   [x] Detailed description of the various steps
 -   [x] Report in the README with project design steps divided per area
 -   [ ] Example dataset for offline testing (sample data not yet included)
--   [ ] Slides for the project poster (add `poster.md` or `slides.md`)
+-   [x] Slides for the project poster (add `poster.md` or `slides.md`)
 -   [x] Airflow + pandas + MongoDB + Postgres used in the pipeline
 -   [x] Star schema built in Postgres
 
