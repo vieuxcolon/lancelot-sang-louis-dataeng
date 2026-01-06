@@ -276,7 +276,7 @@ Note: Even though a smaller EC2 instance could work successfully with our projec
 ## Validation and monitoring
 
 -   `dag_data_bcreate_star_schema` runs `min_test_star_schema` and `full_test_star_schema` before analytics.
--   `dag_data_analytics_validation` fails fast if `dim_date` is empty and stores SQL + results for auditing.
+-   `dag_data_analytics_validation` runs the analytics queries and store the results under ./data/analytics_results
 -   Airflow logs are mounted under `./logs`; raw and analytics outputs are in `./data`.
 
 ## Future developments
