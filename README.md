@@ -244,7 +244,7 @@ From the Airflow UI, activate all DAGs and launch `dag_data_download`. This DAG 
 To set up the project on AWS, launch an Ubuntu 22.04 LTS t3.large instance. Use your keypair to copy the Bash script `setup_ec2_etl.sh` to the EC2 instance. Use Bash to launch the project setup.
 e.g., given an EC2 instance with IP address 54.74.220.227, here is an example of project setup steps.
 
-1. Authorize traffic to the Security Group to which the EC2 instance belongs, here `$SG_ID` for ports `22`, `8080`, `5050`, and `8081`. This allows traffic from all hosts to the specified ports.
+1. Authorize traffic to the Security Group to which the EC2 instance belongs (here `$SG_ID`) for ports `22`, `8080`, `5050`, and `8081`. This allows traffic from all hosts to the specified ports.
     ```powershell
     aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
     aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 8080 --cidr 0.0.0.0/0
