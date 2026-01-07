@@ -34,7 +34,7 @@ Students:
 -   [License](#license)
 
 ## Introduction
-
+A common best pratice in data engineering holds that pipeline correctness is necessary for data correctness, data correctness for query correctness, and query correctness alone is insufficient.
 This project implements an end-to-end, containerized data pipeline that ingests public occupational accident datasets (ARIA and OSHA), cleans and standardizes them, and builds a PostgreSQL star schema for reproducible analytics. The report you are reading is the full project report, including the pipeline design, run instructions, and analysis queries.
 
 ## Data sources
