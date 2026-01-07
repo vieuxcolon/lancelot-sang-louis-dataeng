@@ -285,6 +285,17 @@ Note: Even though a smaller EC2 instance could work successfully with our projec
 -   Extend the star schema with additional dimensions (e.g., region or employer sector).
 -   Integrate Druid into the project architecture
 
+## Project submission checklist
+
+-   [x] Repository with the code, well documented
+-   [x] Docker-compose file to run the environment
+-   [x] Detailed description of the various steps
+-   [x] Report in the README with project design steps divided per area
+-   [x] Example dataset for offline testing
+-   [x] Slides for the project poster (`poster.pdf` and `presentation.md`)
+-   [x] Airflow + pandas + MongoDB + Postgres used in the pipeline
+-   [x] Star schema built in Postgres
+
 ## License
 
 This project is released under the [CC0 1.0 Universal](LICENSE) license.
