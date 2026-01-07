@@ -23,6 +23,7 @@ INSA Lyon - Data Engineering
 ---
 
 # Pipeline overview
+A common principle in data engineering holds that pipeline correctness is necessary for data correctness, data correctness for query correctness, and query correctness alone is insufficient.
 
 ![Pipeline overview](./images/pipeline-overview.png)
 
